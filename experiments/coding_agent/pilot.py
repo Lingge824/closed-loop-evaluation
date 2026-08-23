@@ -7,10 +7,15 @@ import re
 import subprocess
 import sys
 import tempfile
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import List, Tuple
+
+from resource_oracle import (
+    parse_resource_metrics,
+    resource_tests_for,
+)
 
 # ============================================================
 # CONFIG
@@ -43,6 +48,7 @@ class Task:
     prompt: str
     visible_tests: str
     hidden_tests: str
+    resource_tests: str | None = None
 
 
 @dataclass(frozen=True)
@@ -52,6 +58,14 @@ class TestResult:
     stdout: str
     stderr: str
     timed_out: bool = False
+
+
+@dataclass(frozen=True)
+class OracleEvaluation:
+    correctness_test: TestResult
+    resource_test: TestResult | None
+    resource_metrics: dict | None
+    passed: bool
 
 
 TASKS: List[Task] = [
@@ -325,6 +339,35 @@ assert canonical_key("Straße") == "strasse"
 assert canonical_key("\tA\nB") == "a b"
 assert canonical_key("") == ""
 """
+    ),
+]
+
+
+G1_1_TASKS: List[Task] = [
+    TASKS[0],
+    replace(
+        TASKS[1],
+        prompt=(
+            TASKS[1].prompt
+            + "\nAll elements are hashable."
+            + "\nUse expected O(n) time and make the implementation "
+            + "suitable for large inputs."
+        ),
+        resource_tests=resource_tests_for(
+            TASKS[1].task_id
+        ),
+    ),
+    replace(
+        TASKS[2],
+        prompt=(
+            TASKS[2].prompt
+            + "\nAll elements are hashable."
+            + "\nUse expected O(len(a) + len(b)) time and make the "
+            + "implementation suitable for large inputs."
+        ),
+        resource_tests=resource_tests_for(
+            TASKS[2].task_id
+        ),
     ),
 ]
 
@@ -688,6 +731,44 @@ def run_tests(
     ).passed
 
 
+def evaluate_oracle(
+    solution,
+    task,
+):
+    """Evaluate sealed correctness and optional resource contracts."""
+    correctness_test = run_tests_detailed(
+        solution,
+        task.hidden_tests,
+    )
+    resource_source = task.resource_tests
+
+    if resource_source is None:
+        return OracleEvaluation(
+            correctness_test=correctness_test,
+            resource_test=None,
+            resource_metrics=None,
+            passed=correctness_test.passed,
+        )
+
+    resource_test = run_tests_detailed(
+        solution,
+        resource_source,
+    )
+    resource_metrics = parse_resource_metrics(
+        resource_test.stdout
+    )
+
+    return OracleEvaluation(
+        correctness_test=correctness_test,
+        resource_test=resource_test,
+        resource_metrics=resource_metrics,
+        passed=(
+            correctness_test.passed
+            and resource_test.passed
+        ),
+    )
+
+
 def round_seeds(
     base_seed,
     round_index,
@@ -784,13 +865,30 @@ def run_clean_trajectory(
             task.visible_tests,
         )
 
-        oracle_test = run_tests_detailed(
+        oracle_evaluation = evaluate_oracle(
             solution,
-            task.hidden_tests,
+            task,
+        )
+        oracle_test = (
+            oracle_evaluation.correctness_test
+        )
+        resource_test = (
+            oracle_evaluation.resource_test
+        )
+        resource_metrics = (
+            oracle_evaluation.resource_metrics
         )
 
         proxy = proxy_test.passed
-        oracle = oracle_test.passed
+        oracle_correctness = (
+            oracle_test.passed
+        )
+        resource_pass = (
+            resource_test.passed
+            if resource_test is not None
+            else None
+        )
+        oracle = oracle_evaluation.passed
 
         delivered = proxy
 
@@ -822,12 +920,20 @@ def run_clean_trajectory(
             "proxy_pass": proxy,
             "delivered_proxy_pass": delivered,
             "oracle_pass": oracle,
+            "oracle_correctness_pass": oracle_correctness,
+            "resource_pass": resource_pass,
             "proxy_test": asdict(
                 proxy_test
             ),
             "oracle_test": asdict(
                 oracle_test
             ),
+            "resource_test": (
+                asdict(resource_test)
+                if resource_test is not None
+                else None
+            ),
+            "resource_metrics": resource_metrics,
             "flipped": False,
             "skills_before": before,
             "skills_after": skills,
@@ -989,6 +1095,19 @@ def run_counterfactual_trajectory(
                 ]
             )
 
+            oracle_correctness = clean_rec.get(
+                "oracle_correctness_pass",
+                oracle,
+            )
+
+            resource_pass = clean_rec.get(
+                "resource_pass"
+            )
+
+            resource_metrics = clean_rec.get(
+                "resource_metrics"
+            )
+
             proxy_test = TestResult(
                 **clean_rec[
                     "proxy_test"
@@ -999,6 +1118,17 @@ def run_counterfactual_trajectory(
                 **clean_rec[
                     "oracle_test"
                 ]
+            )
+
+            resource_test_payload = clean_rec.get(
+                "resource_test"
+            )
+            resource_test = (
+                TestResult(
+                    **resource_test_payload
+                )
+                if resource_test_payload is not None
+                else None
             )
 
         else:
@@ -1025,13 +1155,30 @@ def run_counterfactual_trajectory(
                 task.visible_tests,
             )
 
-            oracle_test = run_tests_detailed(
+            oracle_evaluation = evaluate_oracle(
                 solution,
-                task.hidden_tests,
+                task,
+            )
+            oracle_test = (
+                oracle_evaluation.correctness_test
+            )
+            resource_test = (
+                oracle_evaluation.resource_test
+            )
+            resource_metrics = (
+                oracle_evaluation.resource_metrics
             )
 
             proxy = proxy_test.passed
-            oracle = oracle_test.passed
+            oracle_correctness = (
+                oracle_test.passed
+            )
+            resource_pass = (
+                resource_test.passed
+                if resource_test is not None
+                else None
+            )
+            oracle = oracle_evaluation.passed
 
         delivered = proxy
         flipped = False
@@ -1068,12 +1215,20 @@ def run_counterfactual_trajectory(
             "proxy_pass": proxy,
             "delivered_proxy_pass": delivered,
             "oracle_pass": oracle,
+            "oracle_correctness_pass": oracle_correctness,
+            "resource_pass": resource_pass,
             "proxy_test": asdict(
                 proxy_test
             ),
             "oracle_test": asdict(
                 oracle_test
             ),
+            "resource_test": (
+                asdict(resource_test)
+                if resource_test is not None
+                else None
+            ),
+            "resource_metrics": resource_metrics,
             "flipped": flipped,
             "skills_before": before,
             "skills_after": skills,
@@ -1178,6 +1333,62 @@ def summarize_pair(
         for t in future_indices
     ]
 
+    paired_resource_passes = [
+        (
+            int(
+                clean[t][
+                    "resource_pass"
+                ]
+            ),
+            int(
+                branch[t][
+                    "resource_pass"
+                ]
+            ),
+        )
+        for t in future_indices
+        if (
+            clean[t].get(
+                "resource_pass"
+            )
+            is not None
+            and branch[t].get(
+                "resource_pass"
+            )
+            is not None
+        )
+    ]
+
+    paired_normalized_costs = [
+        (
+            float(
+                clean[t][
+                    "resource_metrics"
+                ][
+                    "normalized_work"
+                ]
+            ),
+            float(
+                branch[t][
+                    "resource_metrics"
+                ][
+                    "normalized_work"
+                ]
+            ),
+        )
+        for t in future_indices
+        if (
+            clean[t].get(
+                "resource_metrics"
+            )
+            is not None
+            and branch[t].get(
+                "resource_metrics"
+            )
+            is not None
+        )
+    ]
+
     clean_rate = (
         sum(clean_oracle)
         / len(clean_oracle)
@@ -1271,6 +1482,59 @@ def summarize_pair(
             clean_rate
             - branch_rate,
 
+        "future_resource_tasks":
+            len(
+                paired_resource_passes
+            ),
+
+        "future_clean_resource_pass_rate":
+            (
+                sum(
+                    clean_pass
+                    for clean_pass, _
+                    in paired_resource_passes
+                )
+                / len(paired_resource_passes)
+                if paired_resource_passes
+                else float("nan")
+            ),
+
+        "future_branch_resource_pass_rate":
+            (
+                sum(
+                    branch_pass
+                    for _, branch_pass
+                    in paired_resource_passes
+                )
+                / len(paired_resource_passes)
+                if paired_resource_passes
+                else float("nan")
+            ),
+
+        "future_resource_harm":
+            (
+                sum(
+                    clean_pass - branch_pass
+                    for clean_pass, branch_pass
+                    in paired_resource_passes
+                )
+                / len(paired_resource_passes)
+                if paired_resource_passes
+                else float("nan")
+            ),
+
+        "mean_paired_normalized_operation_excess":
+            (
+                sum(
+                    branch_cost - clean_cost
+                    for clean_cost, branch_cost
+                    in paired_normalized_costs
+                )
+                / len(paired_normalized_costs)
+                if paired_normalized_costs
+                else float("nan")
+            ),
+
         "leverage_score":
             leverage_score,
     }
@@ -1347,6 +1611,7 @@ def main():
         "--mode",
         choices=[
             "smoke",
+            "g1_1",
             "baseline",
             "full",
         ],
@@ -1410,6 +1675,87 @@ def main():
             ),
         ],
     )
+
+    # --------------------------------------------------------
+    # PREREGISTERED G1.1 RESOURCE-SENSITIVE PILOT
+    # --------------------------------------------------------
+
+    if args.mode == "g1_1":
+        if args.max_tasks is not None:
+            raise ValueError(
+                "G1.1 uses its frozen three-task sequence; "
+                "--max-tasks is not allowed."
+            )
+
+        g1_1_tasks = list(
+            G1_1_TASKS
+        )
+
+        clean = run_clean_trajectory(
+            g1_1_tasks,
+            "g1_1_clean",
+            args.seed,
+        )
+
+        branch = run_counterfactual_trajectory(
+            g1_1_tasks,
+            clean_reference=clean,
+            flip_rounds=(0,),
+            name="g1_1_flip_0",
+            base_seed=args.seed,
+        )
+
+        metrics = summarize_pair(
+            clean,
+            branch,
+            (0,),
+        )
+
+        resource_records = [
+            record
+            for record in clean
+            if record[
+                "resource_pass"
+            ]
+            is not None
+        ]
+
+        print()
+        print(
+            "G1.1 COMPLETE"
+        )
+        print(
+            "clean correctness passes:",
+            sum(
+                int(
+                    record[
+                        "oracle_correctness_pass"
+                    ]
+                )
+                for record in clean
+            ),
+            "/",
+            len(clean),
+        )
+        print(
+            "clean resource passes:",
+            sum(
+                int(
+                    record[
+                        "resource_pass"
+                    ]
+                )
+                for record in resource_records
+            ),
+            "/",
+            len(resource_records),
+        )
+        print(
+            "paired metrics:",
+            metrics,
+        )
+
+        return
 
     # --------------------------------------------------------
     # SMOKE

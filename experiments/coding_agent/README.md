@@ -16,6 +16,9 @@ This is the active G1 harness. It is based on the uploaded expanded V1 pilot rat
 - Groq endpoints prefer `GROQ_API_KEY` even if an unrelated
   `OPENAI_API_KEY` exists in the shell.
 - Double-flip interactions are disabled by default and, when enabled later, use a common outcome horizon.
+- The exploratory correctness-only G1 smoke remains available unchanged.
+- Preregistered G1.1 adds an explicit hashability/near-linear contract and a
+  deterministic operation-count oracle only to its two downstream probes.
 
 The untouched source files are under `archive/`.
 
@@ -39,6 +42,9 @@ python -m unittest discover -s tests -v
 
 # G1 paired three-task smoke.
 python pilot.py --mode smoke --seed 17
+
+# Preregistered resource-sensitive G1.1 confirmation.
+python pilot.py --mode g1_1 --seed 17
 
 # No-corruption twelve-task persistent-memory baseline.
 python pilot.py --mode baseline --seed 17

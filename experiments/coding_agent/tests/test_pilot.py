@@ -162,8 +162,12 @@ class PilotTests(unittest.TestCase):
             "solution",
             "proxy_pass",
             "oracle_pass",
+            "oracle_correctness_pass",
+            "resource_pass",
             "proxy_test",
             "oracle_test",
+            "resource_test",
+            "resource_metrics",
             "solve_seed",
             "memory_seed",
         ]
