@@ -376,7 +376,18 @@ def chat(messages, seed):
             "Set PILOT_MODEL before running."
         )
 
+    request_options = {}
+
+    if (
+        messages
+        and messages[0].get("content") == MEMORY_SYSTEM
+        and BASE_URL
+        and "groq.com" in BASE_URL.lower()
+    ):
+        request_options["reasoning_effort"] = "none"
+
     response = client().chat.completions.create(
+        **request_options,
         model=MODEL,
         messages=messages,
         temperature=0.0,
