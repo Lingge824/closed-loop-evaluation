@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import os
 from pathlib import Path
 from unittest import mock
 
@@ -45,6 +46,24 @@ def fake_chat(messages, seed):
 
 
 class PilotTests(unittest.TestCase):
+    def test_groq_endpoint_prefers_groq_key(self):
+        with mock.patch.object(
+            pilot,
+            "BASE_URL",
+            "https://api.groq.com/openai/v1",
+        ), mock.patch.dict(
+            os.environ,
+            {
+                "OPENAI_API_KEY": "wrong-provider-key",
+                "GROQ_API_KEY": "correct-groq-key",
+            },
+            clear=False,
+        ):
+            self.assertEqual(
+                pilot.resolve_api_key(),
+                "correct-groq-key",
+            )
+
     def test_extract_python_removes_thinking_prefix(self):
         response = (
             "<think>private reasoning</think>\n"
@@ -54,6 +73,49 @@ class PilotTests(unittest.TestCase):
             pilot.extract_python(response),
             "def f():\n    return 1\n",
         )
+
+    def test_extract_memory_removes_reasoning_and_enforces_bullets(self):
+        response = (
+            "<think>private reasoning with misleading bullets:\n"
+            "- do not retain this\n</think>\n"
+            "- Keep the first reusable lesson.\n"
+            "* Keep the second reusable lesson.\n"
+            "Unstructured prose must be discarded.\n"
+        )
+        self.assertEqual(
+            pilot.extract_memory(response),
+            "- Keep the first reusable lesson.\n"
+            "- Keep the second reusable lesson.\n",
+        )
+
+    def test_extract_memory_caps_and_rejects_invalid_output(self):
+        response = "\n".join(
+            f"- lesson {index}"
+            for index in range(15)
+        )
+        memory = pilot.extract_memory(response)
+        self.assertEqual(
+            len(memory.strip().splitlines()),
+            12,
+        )
+        self.assertNotIn(
+            "lesson 12",
+            memory,
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            "no valid bullet points",
+        ):
+            pilot.extract_memory(
+                "<think>reasoning only</think>"
+            )
+        with self.assertRaisesRegex(
+            ValueError,
+            "no valid bullet points",
+        ):
+            pilot.extract_memory(
+                "<think>unfinished reasoning\n- fake lesson"
+            )
 
     def test_test_runner_preserves_failure_diagnostics(self):
         result = pilot.run_tests_detailed(

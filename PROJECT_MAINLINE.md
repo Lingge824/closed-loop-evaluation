@@ -32,5 +32,9 @@ Do not add new benchmarks, agent architectures, corruption families, or theory b
 
 - Toy V0–V3 code and figures: preserved.
 - Original coding-agent pilots: preserved in `archive/`.
-- Expanded coding-agent V1 harness: repaired; local causal-identification tests pass `5/5`.
-- Live-model smoke/baseline: pending provider credentials.
+- Expanded coding-agent V1 harness: repaired; local regression tests pass `8/8`.
+- First live seed-17 smoke: strict pairing and downstream solution divergence
+  confirmed, but invalidated for memory-distance estimation because provider
+  reasoning text entered persistent memory.
+- Memory contract and Groq credential selection: repaired; live smoke rerun
+  required before the no-corruption baseline.

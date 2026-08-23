@@ -18,11 +18,6 @@ from typing import List, Tuple
 
 MODEL = os.environ.get("PILOT_MODEL", "")
 BASE_URL = os.environ.get("OPENAI_BASE_URL")
-API_KEY = (
-    os.environ.get("OPENAI_API_KEY")
-    or os.environ.get("GROQ_API_KEY")
-    or "dummy"
-)
 
 RESULTS_DIR = Path(
     os.environ.get(
@@ -338,6 +333,22 @@ assert canonical_key("") == ""
 # API
 # ============================================================
 
+def resolve_api_key():
+    """Select the credential that matches the configured provider."""
+    if BASE_URL and "groq.com" in BASE_URL.lower():
+        return (
+            os.environ.get("GROQ_API_KEY")
+            or os.environ.get("OPENAI_API_KEY")
+            or "dummy"
+        )
+
+    return (
+        os.environ.get("OPENAI_API_KEY")
+        or os.environ.get("GROQ_API_KEY")
+        or "dummy"
+    )
+
+
 def client():
     try:
         from openai import OpenAI
@@ -350,8 +361,11 @@ def client():
     if BASE_URL:
         kwargs["base_url"] = BASE_URL
 
+    # A shell may already contain an unrelated OPENAI_API_KEY.  When the
+    # configured endpoint is Groq, prefer GROQ_API_KEY so the harness cannot
+    # silently authenticate with the wrong provider credential.
     return OpenAI(
-        api_key=API_KEY,
+        api_key=resolve_api_key(),
         **kwargs,
     )
 
@@ -459,6 +473,47 @@ def extract_python(text):
     return code + "\n"
 
 
+def extract_memory(text, max_bullets=12):
+    """Return a compact skills memory and discard model reasoning text."""
+    visible = re.sub(
+        r"<think>.*?</think>",
+        "",
+        text,
+        flags=re.S | re.I,
+    )
+    visible = re.sub(
+        r"<think>.*$",
+        "",
+        visible,
+        flags=re.S | re.I,
+    )
+
+    bullets = []
+    for raw_line in visible.splitlines():
+        line = raw_line.strip()
+        match = re.match(
+            r"^(?:-|\*)\s+(.+)$",
+            line,
+        )
+        if not match:
+            continue
+
+        item = match.group(1).strip()
+        if item:
+            bullets.append(
+                f"- {item}"
+            )
+
+    if not bullets:
+        raise ValueError(
+            "Memory writer returned no valid bullet points."
+        )
+
+    return "\n".join(
+        bullets[:max_bullets]
+    ) + "\n"
+
+
 def solve(
     task,
     skills,
@@ -517,7 +572,7 @@ PROXY EVALUATOR VERDICT:
 Return updated skills.md.
 """
 
-    return chat_fn([
+    response = chat_fn([
         {
             "role": "system",
             "content": MEMORY_SYSTEM,
@@ -526,7 +581,11 @@ Return updated skills.md.
             "role": "user",
             "content": prompt,
         },
-    ], seed).strip()
+    ], seed)
+
+    return extract_memory(
+        response,
+    )
 
 
 # ============================================================

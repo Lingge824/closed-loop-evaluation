@@ -11,6 +11,10 @@ This is the active G1 harness. It is based on the uploaded expanded V1 pilot rat
 - Solver and memory-update seeds are paired by round.
 - Test failures retain return code, stdout, stderr, and timeout state.
 - Provider `system_fingerprint` is logged when available.
+- Memory-writer reasoning tags are removed and persisted memory is restricted
+  to at most twelve Markdown bullets.
+- Groq endpoints prefer `GROQ_API_KEY` even if an unrelated
+  `OPENAI_API_KEY` exists in the shell.
 - Double-flip interactions are disabled by default and, when enabled later, use a common outcome horizon.
 
 The untouched source files are under `archive/`.
