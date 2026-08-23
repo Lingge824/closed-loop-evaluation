@@ -1,0 +1,81 @@
+Closed-Loop Stability Pilot V2.6
+
+Question:
+After accounting for early TRUE performance deviation, does closed-loop state dynamics still predict additional long-horizon amplification?
+
+===== BUILDING V26 TRAIN =====
+alpha=0.5, beta=0.02
+alpha=1.0, beta=0.02
+alpha=2.0, beta=0.02
+alpha=0.5, beta=0.05
+alpha=1.0, beta=0.05
+alpha=2.0, beta=0.05
+v26 train: 2400 interventions
+
+===== BUILDING V26 HELDOUT =====
+alpha=4.0, beta=0.02
+alpha=4.0, beta=0.05
+alpha=0.5, beta=0.1
+alpha=1.0, beta=0.1
+alpha=2.0, beta=0.1
+alpha=4.0, beta=0.1
+v26 heldout: 2400 interventions
+
+============================================
+DIRECT HELD-OUT MODELS
+============================================
+
+model               rho    R2_log  R2_raw  within_med
+base               rho= 0.775 R2_log=  0.955 R2_raw=  0.304 within_med= 0.641
+impact             rho= 0.843 R2_log=  0.964 R2_raw=  0.102 within_med= 0.640
+growth             rho= 0.544 R2_log=  0.377 R2_raw=-451.846 within_med= 0.481
+dynamics           rho= 0.868 R2_log=  0.972 R2_raw=  0.233 within_med= 0.704
+extended           rho= 0.855 R2_log=  0.972 R2_raw=  0.351 within_med= 0.708
+
+============================================
+RESIDUAL AMPLIFICATION TEST
+============================================
+
+Std of held-out residual target: 0.4229617130678692
+
+Dynamics -> residual future amplification
+Pooled residual rho: 0.34585519753330246
+Residual R2: 0.08643598374362038
+Median within-regime residual rho: 0.29746884290652054
+Minimum within-regime residual rho: 0.08782313459305799
+
+Absolute prediction after residual correction:
+early-perf base    rho= 0.775 R2_log=  0.955 R2_raw=  0.304 within_med= 0.641
+base + dynamics    rho= 0.808 R2_log=  0.961 R2_raw=  0.341 within_med= 0.667
+
+Delta R2_log: 0.005650898243567126
+Delta pooled rho: 0.033075233173198604
+Delta within-regime median rho: 0.02592614458290743
+
+============================================
+WITHIN-REGIME PERMUTATION NULL
+============================================
+
+Actual pooled residual rho: 0.34585519753330246
+Permutation null pooled mean: 0.013490487051023544
+Permutation null pooled 95%: [-0.26599003  0.32326569]
+Permutation p-value pooled: 0.01996007984031936
+
+Actual median within-regime residual rho: 0.29746884290652054
+Permutation null within mean: 0.046366382222419886
+Permutation null within 95%: [-0.18819284  0.32318908]
+Permutation p-value within: 0.0499001996007984
+
+============================================
+V2.6 DECISION
+============================================
+
+Residual within-regime rho: 0.29746884290652054
+Delta R2_log beyond early performance: 0.005650898243567126
+Delta within-regime rho: 0.02592614458290743
+Permutation p-value: 0.0499001996007984
+
+LEVERAGE DOMINATES, DYNAMICS ADD MODEST SIGNAL
+
+The phenomenon is real, but most predictive power comes from early perturbation magnitude rather than amplification.
+Reframe around closed-loop evaluation leverage rather than strong instability language.

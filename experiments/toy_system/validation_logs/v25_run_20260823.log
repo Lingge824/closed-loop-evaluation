@@ -1,0 +1,136 @@
+Closed-Loop Stability Pilot V2.5
+
+No simulator parameters are changed.
+Goal: attempt to explain away the strong V2 result with simpler baselines.
+
+============================================
+V2.5 PRIMARY FALSIFICATION TEST
+============================================
+
+===== BUILDING TRAIN =====
+alpha=0.5, beta=0.02
+alpha=1.0, beta=0.02
+alpha=2.0, beta=0.02
+alpha=0.5, beta=0.05
+alpha=1.0, beta=0.05
+alpha=2.0, beta=0.05
+train: 2400 interventions
+
+===== BUILDING HELDOUT =====
+alpha=4.0, beta=0.02
+alpha=4.0, beta=0.05
+alpha=0.5, beta=0.1
+alpha=1.0, beta=0.1
+alpha=2.0, beta=0.1
+alpha=4.0, beta=0.1
+heldout: 2400 interventions
+
+===== FEATURE ABLATION =====
+feature              rho     R2_log   R2_raw   nMAE
+system              0.512    0.009   -0.141   0.845
+early_perf          0.777    0.956    0.306   0.601
+one_step            0.771    0.957    0.100   0.669
+impact              0.843    0.964    0.102   0.657
+growth              0.544    0.377 -451.846   4.807
+impact_growth       0.868    0.972    0.233   0.601
+impact_perf         0.827    0.966    0.231   0.606
+all_early           0.859    0.972    0.342   0.555
+full                0.861    0.974    0.460   0.527
+
+===== SHUFFLE CONTROL =====
+rho=0.379 R2_log=-0.046 R2_raw=-0.450
+
+============================================
+V2.5 LEAVE-ONE-REGIME-OUT
+============================================
+
+===== BUILDING REGIME (0.5, 0.02) =====
+alpha=0.5, beta=0.02
+regime (0.5, 0.02): 200 interventions
+
+===== BUILDING REGIME (1.0, 0.02) =====
+alpha=1.0, beta=0.02
+regime (1.0, 0.02): 200 interventions
+
+===== BUILDING REGIME (2.0, 0.02) =====
+alpha=2.0, beta=0.02
+regime (2.0, 0.02): 200 interventions
+
+===== BUILDING REGIME (4.0, 0.02) =====
+alpha=4.0, beta=0.02
+regime (4.0, 0.02): 200 interventions
+
+===== BUILDING REGIME (0.5, 0.05) =====
+alpha=0.5, beta=0.05
+regime (0.5, 0.05): 200 interventions
+
+===== BUILDING REGIME (1.0, 0.05) =====
+alpha=1.0, beta=0.05
+regime (1.0, 0.05): 200 interventions
+
+===== BUILDING REGIME (2.0, 0.05) =====
+alpha=2.0, beta=0.05
+regime (2.0, 0.05): 200 interventions
+
+===== BUILDING REGIME (4.0, 0.05) =====
+alpha=4.0, beta=0.05
+regime (4.0, 0.05): 200 interventions
+
+===== BUILDING REGIME (0.5, 0.1) =====
+alpha=0.5, beta=0.1
+regime (0.5, 0.1): 200 interventions
+
+===== BUILDING REGIME (1.0, 0.1) =====
+alpha=1.0, beta=0.1
+regime (1.0, 0.1): 200 interventions
+
+===== BUILDING REGIME (2.0, 0.1) =====
+alpha=2.0, beta=0.1
+regime (2.0, 0.1): 200 interventions
+
+===== BUILDING REGIME (4.0, 0.1) =====
+alpha=4.0, beta=0.1
+regime (4.0, 0.1): 200 interventions
+
+===== LOORO MEDIAN RHO =====
+feature              median_rho   min_rho   >0.5
+system                  0.025    -0.070   0.00
+early_perf              0.688     0.491   0.92
+one_step                0.626     0.465   0.83
+impact                  0.634     0.524   1.00
+growth                  0.514     0.406   0.58
+impact_growth           0.694     0.582   1.00
+impact_perf             0.755     0.525   1.00
+all_early               0.766     0.666   1.00
+full                    0.777     0.661   1.00
+
+============================================
+V2.5 INTERPRETATION
+============================================
+
+1. EARLY PERFORMANCE BASELINE
+early_perf rho = 0.7767940995472068
+impact_growth rho = 0.8682294154529715
+
+2. ONE-STEP PERSISTENCE
+one_step rho = 0.7711527733357223
+three-step impact rho = 0.8426023670769884
+
+3. DOES GROWTH ADD INFORMATION?
+impact-only rho = 0.8426023670769884
+growth-only rho = 0.5435094420167937
+impact+growth rho = 0.8682294154529715
+
+4. SHUFFLE CONTROL
+shuffle rho = 0.37873677043482606
+
+5. LOORO
+median early-performance rho = 0.6877445686239372
+median impact-only rho = 0.6336140874067951
+median impact+growth rho = 0.6937931563426455
+
+
+FALSIFICATION CONCERN
+
+A trivial baseline or implementation artifact explains too much of the V2 result.
+Do not proceed to real agents until this is understood.

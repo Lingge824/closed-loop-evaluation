@@ -1,0 +1,144 @@
+Closed-Loop Evaluation Pilot V3
+
+Question:
+Are evaluator errors mostly additive local leverage, or can repeated feedback create delayed nonlinear snowball effects?
+
+============================================
+EXPERIMENT 1: SINGLE-ERROR HORIZON SCALING
+============================================
+
+T=40
+  median late/early performance ratio: 1.1460988326272705
+  median late/early capability ratio: 1.2591497244366725
+  mean late performance deviation: 6.25470829322137e-05
+  mean late capability deviation: 0.0005360857299316446
+  fraction performance snowball: 0.36666666666666664
+  fraction capability snowball: 0.275
+
+T=80
+  median late/early performance ratio: 1.1129959858961542
+  median late/early capability ratio: 1.253801806241127
+  mean late performance deviation: 5.720754207347753e-05
+  mean late capability deviation: 0.00045038156437399017
+  fraction performance snowball: 0.3
+  fraction capability snowball: 0.26666666666666666
+
+T=160
+  median late/early performance ratio: 0.5952939263175997
+  median late/early capability ratio: 0.7269197086259686
+  mean late performance deviation: 4.2057679685217445e-05
+  mean late capability deviation: 0.00027330308891131816
+  fraction performance snowball: 0.2
+  fraction capability snowball: 0.14166666666666666
+
+T=320
+  median late/early performance ratio: 0.14341018774392444
+  median late/early capability ratio: 0.26826462171268595
+  mean late performance deviation: 9.657188487288075e-06
+  mean late capability deviation: 0.00010613743306452775
+  fraction performance snowball: 0.041666666666666664
+  fraction capability snowball: 0.008333333333333333
+
+============================================
+EXPERIMENT 2: ERROR DENSITY SCALING
+============================================
+
+error_rate=0.025
+  actual accuracy: 0.9750000000000002
+  mean late signed regret: 0.000268188982131354
+  mean late absolute deviation: 0.0003871516041123498
+  mean whole-trajectory abs deviation: 0.0003479644850579206
+  late abs deviation / error rate: 0.01548606416449399
+
+error_rate=0.050
+  actual accuracy: 0.9499999999999997
+  mean late signed regret: 0.0005940194288019929
+  mean late absolute deviation: 0.000598578671146233
+  mean whole-trajectory abs deviation: 0.0005208365268316641
+  late abs deviation / error rate: 0.01197157342292466
+
+error_rate=0.100
+  actual accuracy: 0.8999999999999998
+  mean late signed regret: 0.0011523450591095486
+  mean late absolute deviation: 0.0011617534941923149
+  mean whole-trajectory abs deviation: 0.0009686711316919999
+  late abs deviation / error rate: 0.011617534941923148
+
+error_rate=0.200
+  actual accuracy: 0.8000000000000003
+  mean late signed regret: 0.0023263323188716695
+  mean late absolute deviation: 0.0023263323188716695
+  mean whole-trajectory abs deviation: 0.001812229496229126
+  late abs deviation / error rate: 0.011631661594358347
+
+Power-law scaling:
+  late deviation exponent: 0.8717951237141147
+  full trajectory exponent: 0.8037437405361604
+
+H(20%) / [2 * H(10%)] = 1.0012159763236985
+
+============================================
+EXPERIMENT 3: PAIRWISE ERROR INTERACTION
+============================================
+
+Number of error pairs: 180
+Mean interaction H12-H1-H2: -3.666077687054653e-08
+Median normalized interaction: 0.0
+Mean normalized interaction: -0.0697075327092884
+Fraction positive interaction: 0.34444444444444444
+Fraction normalized interaction > 0.25: 0.08888888888888889
+90th percentile normalized interaction: 0.22212941519980817
+
+============================================
+EXPERIMENT 4: TEMPORAL ERROR PERSISTENCE
+============================================
+
+iid
+  accuracy: 0.8999999999999998
+  mean late signed regret: 0.0013470825804020059
+  mean late absolute deviation: 0.0013525487238300487
+  mean full absolute deviation: 0.0010248716414507605
+
+burst50
+  accuracy: 0.8999999999999998
+  mean late signed regret: 0.0011278443824348338
+  mean late absolute deviation: 0.0011514072145516455
+  mean full absolute deviation: 0.0009265193960095785
+
+burst25
+  accuracy: 0.8999999999999998
+  mean late signed regret: 0.0008497983789635897
+  mean late absolute deviation: 0.0008633293956522349
+  mean full absolute deviation: 0.0006692908497247429
+
+burst50 / iid late deviation ratio: 0.8512870504508611
+burst25 / iid late deviation ratio: 0.638298184607519
+
+============================================
+V3 SUMMARY
+============================================
+
+LONG-HORIZON SINGLE ERROR
+T=320 median perf late/early ratio: 0.14341018774392444
+T=320 performance snowball fraction: 0.041666666666666664
+T=320 capability snowball fraction: 0.008333333333333333
+
+ERROR DENSITY
+late-deviation scaling exponent: 0.8717951237141147
+H(20%) / [2 H(10%)]: 1.0012159763236985
+
+PAIRWISE INTERACTION
+median normalized interaction: 0.0
+fraction positive: 0.34444444444444444
+fraction strong positive: 0.08888888888888889
+
+TEMPORAL PERSISTENCE
+burst50 / iid: 0.8512870504508611
+burst25 / iid: 0.638298184607519
+
+Snowball evidence count: 0 / 4
+
+MOSTLY ADDITIVE LEVERAGE
+
+In this controlled system, evaluator errors mostly behave like persistent local update leverage rather than a runaway snowball process.
+The main paper framing should emphasize evaluation leverage; stability can remain a secondary question.
