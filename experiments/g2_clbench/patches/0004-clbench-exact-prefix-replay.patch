@@ -1,0 +1,215 @@
+diff --git a/src/systems/icl/system.py b/src/systems/icl/system.py
+index 424a9fc..8b665d9 100644
+--- a/src/systems/icl/system.py
++++ b/src/systems/icl/system.py
+@@ -130,20 +130,7 @@ class ICLSystem(ContinualLearningSystem):
+         Returns:
+             Response with action and metadata
+         """
+-        query_content = query.prompt if query.prompt else "(no content)"
+-
+-        self.interaction_count += 1
+-
+-        # Add user message to context
+-        self._add_message("user", query_content)
+-
+-        # Prepare messages for LLM call
+-        schema_tokens = self._response_schema_tokens(query.response_schema)
+-        self._truncate_context(
+-            prefix_messages=self._system_messages(),
+-            extra_tokens=schema_tokens,
+-        )
+-        llm_messages = [*self._system_messages(), *self.messages]
++        llm_messages = self._begin_turn(query)
+ 
+         usage_events = []
+ 
+@@ -176,9 +163,7 @@ class ICLSystem(ContinualLearningSystem):
+             self._note_prompt_token_usage(usage_event.input_tokens)
+             self.record_usage_event(usage_event)
+ 
+-        # Add assistant response to context
+-        self._add_message("assistant", assistant_record)
+-        self._sync_provider_visible_count()
++        self._finish_turn(assistant_record)
+ 
+         return Response(
+             action=action,
+@@ -195,6 +180,35 @@ class ICLSystem(ContinualLearningSystem):
+             },
+         )
+ 
++    def replay_response(
++        self,
++        query: Query,
++        *,
++        assistant_record: str,
++        input_tokens: int,
++    ) -> None:
++        """Rebuild one cached LiteLLM turn without making a provider call.
++
++        The caller must supply the exact serialized assistant record and the
++        API-reported prompt-token count from the clean turn. This follows the
++        same context insertion, truncation, and token-budget calibration path
++        as :meth:`respond`, but deliberately records no billable usage event.
++        """
++        if self._provider_client.state.provider != "litellm":
++            raise ValueError("replay_response requires provider_mode='litellm_chat'")
++        if not isinstance(assistant_record, str):
++            raise TypeError("assistant_record must be a string")
++        if (
++            isinstance(input_tokens, bool)
++            or not isinstance(input_tokens, int)
++            or input_tokens < 0
++        ):
++            raise ValueError("input_tokens must be a non-negative integer")
++
++        self._begin_turn(query)
++        self._note_prompt_token_usage(input_tokens)
++        self._finish_turn(assistant_record)
++
+     def reset(self) -> None:
+         """
+         Reset for new task instance.
+@@ -284,6 +298,24 @@ class ICLSystem(ContinualLearningSystem):
+         """Count tokens using the latest API-reported prompt usage when available."""
+         return self._token_budget.count(messages, self._estimate_message_tokens)
+ 
++    def _begin_turn(self, query: Query) -> list[dict]:
++        """Insert a user turn and return the exact provider-visible messages."""
++        query_content = query.prompt if query.prompt else "(no content)"
++        self.interaction_count += 1
++        self._add_message("user", query_content)
++
++        schema_tokens = self._response_schema_tokens(query.response_schema)
++        self._truncate_context(
++            prefix_messages=self._system_messages(),
++            extra_tokens=schema_tokens,
++        )
++        return [*self._system_messages(), *self.messages]
++
++    def _finish_turn(self, assistant_record: str) -> None:
++        """Persist an assistant record after either a live or replayed turn."""
++        self._add_message("assistant", assistant_record)
++        self._sync_provider_visible_count()
++
+     def _note_prompt_token_usage(self, input_tokens: int | None) -> None:
+         """Anchor future truncation decisions on the last real prompt usage."""
+         self._token_budget.note_usage(
+diff --git a/tests/test_token_budget_systems.py b/tests/test_token_budget_systems.py
+index c23bd41..905c56a 100644
+--- a/tests/test_token_budget_systems.py
++++ b/tests/test_token_budget_systems.py
+@@ -1,7 +1,7 @@
+ import pytest
+ from pydantic import BaseModel
+ 
+-from src.interface import Query
++from src.interface import Observation, Query
+ from src.systems.icl import system as icl_module
+ from src.systems.icl.system import ICLSystem
+ from src.systems.icl_notepad import system as icl_notepad_module
+@@ -158,3 +158,103 @@ def test_icl_rejects_sampling_controls_on_native_provider_path():
+             temperature=0.0,
+             seed=17,
+         )
++
++
++def test_icl_replay_rebuilds_exact_prefix_without_model_call(monkeypatch):
++    calls = []
++
++    def fake_completion(**kwargs):
++        calls.append(kwargs)
++        return DummyParsedResponse(), _usage_event(240)
++
++    monkeypatch.setattr(
++        icl_module, "completion_with_structured_output", fake_completion
++    )
++    monkeypatch.setattr(
++        icl_module.litellm,
++        "token_counter",
++        lambda *, model, messages: len(messages) * 100,
++    )
++
++    query = Query(prompt="first", response_schema=DummyAction)
++    clean = ICLSystem(
++        model="test-model",
++        max_tokens=4_096,
++        reserve_tokens=0,
++        provider_mode="litellm_chat",
++        temperature=0.0,
++        seed=17,
++    )
++    clean.respond(query)
++    clean_usage = clean.consume_usage_events()
++    assert len(clean_usage) == 1
++    assert clean_usage[0].input_tokens == 240
++    assistant_record = clean.messages[-1]["content"]
++
++    feedback = Observation(content="truthful feedback")
++    clean.observe(feedback)
++
++    replayed = ICLSystem(
++        model="test-model",
++        max_tokens=4_096,
++        reserve_tokens=0,
++        provider_mode="litellm_chat",
++        temperature=0.0,
++        seed=17,
++    )
++    calls_before_replay = len(calls)
++    replayed.replay_response(
++        query,
++        assistant_record=assistant_record,
++        input_tokens=240,
++    )
++    assert len(calls) == calls_before_replay
++    assert replayed.consume_usage_events() == []
++    replayed.observe(feedback)
++
++    assert replayed.messages == clean.messages
++    assert replayed.interaction_count == clean.interaction_count
++    assert replayed.get_truncation_stats() == clean.get_truncation_stats()
++    assert vars(replayed._token_budget) == vars(clean._token_budget)
++    assert (
++        replayed._provider_client.state_metadata()
++        == clean._provider_client.state_metadata()
++    )
++
++    next_query = Query(prompt="second", response_schema=DummyAction)
++    clean.respond(next_query)
++    replayed.respond(next_query)
++    assert calls[-2]["messages"] == calls[-1]["messages"]
++    assert calls[-2]["temperature"] == calls[-1]["temperature"] == 0.0
++    assert calls[-2]["seed"] == calls[-1]["seed"] == 17
++
++
++def test_icl_replay_rejects_native_provider_path():
++    system = ICLSystem(
++        model="gpt-5",
++        max_tokens=4_096,
++        provider_mode="auto",
++    )
++
++    with pytest.raises(ValueError, match="provider_mode='litellm_chat'"):
++        system.replay_response(
++            Query(prompt="hello", response_schema=DummyAction),
++            assistant_record='{"answer":"ok"}',
++            input_tokens=10,
++        )
++
++
++@pytest.mark.parametrize("invalid_input_tokens", [-1, True, 1.5, "10", None])
++def test_icl_replay_rejects_invalid_input_tokens(invalid_input_tokens):
++    system = ICLSystem(
++        model="test-model",
++        max_tokens=4_096,
++        provider_mode="litellm_chat",
++    )
++
++    with pytest.raises(ValueError, match="non-negative integer"):
++        system.replay_response(
++            Query(prompt="hello", response_schema=DummyAction),
++            assistant_record='{"answer":"ok"}',
++            input_tokens=invalid_input_tokens,
++        )
