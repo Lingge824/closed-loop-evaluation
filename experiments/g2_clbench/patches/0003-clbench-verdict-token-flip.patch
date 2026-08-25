@@ -1,0 +1,135 @@
+diff --git a/src/tasks/database_exploration/task.py b/src/tasks/database_exploration/task.py
+index 872a82d..6df0ac6 100644
+--- a/src/tasks/database_exploration/task.py
++++ b/src/tasks/database_exploration/task.py
+@@ -150,6 +150,7 @@ class DatabaseExploration(ContinualLearningTask):
+         seed: int = 42,
+         response_timeout_seconds: float = RESPONSE_TIMEOUT_SECONDS,
+         feedback_mode: str = "official",
++        verdict_flip_question_num: int | None = None,
+     ):
+         if num_instances is not None:
+             num_questions = num_instances
+@@ -213,6 +214,21 @@ class DatabaseExploration(ContinualLearningTask):
+                 "feedback_mode must be either 'official' or 'verdict_only'"
+             )
+         self.feedback_mode = feedback_mode
++        if verdict_flip_question_num is not None:
++            if (
++                isinstance(verdict_flip_question_num, bool)
++                or not isinstance(verdict_flip_question_num, int)
++                or verdict_flip_question_num < 1
++            ):
++                raise ValueError(
++                    "verdict_flip_question_num must be a positive integer or None"
++                )
++            if feedback_mode != "verdict_only":
++                raise ValueError(
++                    "verdict_flip_question_num requires feedback_mode="
++                    "'verdict_only'"
++                )
++        self.verdict_flip_question_num = verdict_flip_question_num
+ 
+         # Schema drift config
+         variant_config = self.variant_spec.config if self.variant_spec else {}
+@@ -663,9 +679,12 @@ class DatabaseExploration(ContinualLearningTask):
+ 
+         true_verdict = "PASS" if correct else "FAIL"
+         if self.feedback_mode == "verdict_only":
++            delivered_verdict = true_verdict
++            if question_num == self.verdict_flip_question_num:
++                delivered_verdict = "FAIL" if true_verdict == "PASS" else "PASS"
+             feedback = VERDICT_ONLY_FEEDBACK.format(
+                 question_num=question_num,
+-                verdict=true_verdict,
++                verdict=delivered_verdict,
+                 answer=answer,
+                 num_queries=self._queries_this_question,
+             )
+diff --git a/tests/test_database_exploration_verdict_feedback.py b/tests/test_database_exploration_verdict_feedback.py
+index 9dd8e78..ff8d4fe 100644
+--- a/tests/test_database_exploration_verdict_feedback.py
++++ b/tests/test_database_exploration_verdict_feedback.py
+@@ -9,13 +9,18 @@ from src.tasks.database_exploration.prompts import FEEDBACK_INCORRECT
+ from src.tasks.database_exploration.task import DatabaseAction, DatabaseExploration
+ 
+ 
+-def _make_task(feedback_mode: str) -> DatabaseExploration:
++def _make_task(
++    feedback_mode: str,
++    *,
++    verdict_flip_question_num: int | None = None,
++) -> DatabaseExploration:
+     task = DatabaseExploration(
+         db_path="unused.db",
+         questions_path="unused.json",
+         num_questions=1,
+         max_queries_per_question=15,
+         feedback_mode=feedback_mode,
++        verdict_flip_question_num=verdict_flip_question_num,
+     )
+     task.instances = [
+         {
+@@ -135,3 +140,62 @@ def test_default_official_feedback_is_unchanged():
+ def test_invalid_feedback_mode_is_rejected():
+     with pytest.raises(ValueError, match="feedback_mode"):
+         _make_task("unknown")
++
++
++@pytest.mark.parametrize(
++    ("submitted", "true_verdict", "delivered_verdict"),
++    [
++        ("42", "PASS", "FAIL"),
++        ("7", "FAIL", "PASS"),
++    ],
++)
++def test_verdict_flip_changes_only_the_delivered_token(
++    submitted,
++    true_verdict,
++    delivered_verdict,
++):
++    clean = _make_task("verdict_only")
++    flipped = _make_task("verdict_only", verdict_flip_question_num=1)
++
++    clean_step = _answer(clean, submitted)
++    flipped_step = _answer(flipped, submitted)
++
++    assert clean._question_history == flipped._question_history
++    assert clean_step.instance_outcome == flipped_step.instance_outcome
++    assert clean_step.observation.metadata == flipped_step.observation.metadata
++    assert clean_step.observation.metadata["true_verdict"] == true_verdict
++
++    clean_lines = clean_step.observation.content.splitlines()
++    flipped_lines = flipped_step.observation.content.splitlines()
++    assert clean_lines[1:] == flipped_lines[1:]
++    assert clean_lines[0].replace(true_verdict, delivered_verdict) == flipped_lines[0]
++    assert clean_step.observation.content.count(true_verdict) == 1
++    assert flipped_step.observation.content.count(delivered_verdict) == 1
++
++    clean_result = clean.evaluate()
++    flipped_result = flipped.evaluate()
++    assert clean_result.metrics == flipped_result.metrics
++    assert clean_result.eval_metrics == flipped_result.eval_metrics
++    assert clean_result.instance_outcomes == flipped_result.instance_outcomes
++
++
++def test_verdict_flip_applies_only_at_the_configured_question_number():
++    task = _make_task("verdict_only", verdict_flip_question_num=2)
++
++    step = _answer(task, "42")
++
++    assert "EVALUATOR VERDICT: PASS" in step.observation.content
++
++
++def test_verdict_flip_requires_verdict_only_feedback():
++    with pytest.raises(ValueError, match="requires feedback_mode"):
++        _make_task("official", verdict_flip_question_num=1)
++
++
++@pytest.mark.parametrize("invalid_question_num", [0, -1, True, 1.5, "1"])
++def test_verdict_flip_rejects_invalid_question_numbers(invalid_question_num):
++    with pytest.raises(ValueError, match="positive integer"):
++        _make_task(
++            "verdict_only",
++            verdict_flip_question_num=invalid_question_num,
++        )
