@@ -1,0 +1,248 @@
+diff --git a/src/systems/icl/system.py b/src/systems/icl/system.py
+index 8b665d9..4b16430 100644
+--- a/src/systems/icl/system.py
++++ b/src/systems/icl/system.py
+@@ -53,6 +53,7 @@ class ICLSystem(ContinualLearningSystem):
+         anthropic_max_tokens: int | None = None,
+         temperature: float | None = None,
+         seed: int | None = None,
++        request_timeout_seconds: float | None = None,
+     ):
+         """
+         Initialize ICL baseline system.
+@@ -76,6 +77,8 @@ class ICLSystem(ContinualLearningSystem):
+                 LiteLLM chat path and is forwarded unchanged on every request.
+             seed: Optional LiteLLM request seed. Requires the LiteLLM chat path
+                 and is forwarded unchanged on every request.
++            request_timeout_seconds: Optional LiteLLM request timeout in seconds.
++                Requires the LiteLLM chat path and is forwarded on every request.
+         """
+         self._name = name
+         self.model = model
+@@ -85,6 +88,9 @@ class ICLSystem(ContinualLearningSystem):
+         self.provider_mode = provider_mode
+         self.temperature = temperature
+         self.seed = seed
++        if request_timeout_seconds is not None and request_timeout_seconds <= 0:
++            raise ValueError("request_timeout_seconds must be positive or None")
++        self.request_timeout_seconds = request_timeout_seconds
+         self._provider_client = ProviderTurnClient(
+             model=model,
+             system_prompt=system_prompt,
+@@ -94,11 +100,13 @@ class ICLSystem(ContinualLearningSystem):
+             anthropic_max_tokens=anthropic_max_tokens,
+         )
+         if (
+-            temperature is not None or seed is not None
++            temperature is not None
++            or seed is not None
++            or request_timeout_seconds is not None
+         ) and self._provider_client.state.provider != "litellm":
+             raise ValueError(
+-                "temperature and seed controls require provider_mode="
+-                "'litellm_chat'"
++                "temperature, seed, and request timeout controls require "
++                "provider_mode='litellm_chat'"
+             )
+
+         # Context storage
+@@ -143,6 +151,7 @@ class ICLSystem(ContinualLearningSystem):
+                     response_schema=query.response_schema,
+                     temperature=self.temperature,
+                     seed=self.seed,
++                    timeout=self.request_timeout_seconds,
+                 )
+                 usage_events = [usage_event]
+                 assistant_record = action.model_dump_json()
+@@ -173,6 +182,7 @@ class ICLSystem(ContinualLearningSystem):
+                 "model": self.model,
+                 "temperature": self.temperature,
+                 "seed": self.seed,
++                "request_timeout_seconds": self.request_timeout_seconds,
+                 "context_tokens": self._count_message_tokens(self.messages),
+                 "has_truncated": self.has_truncated_flag,
+                 "truncation_count": self.truncation_count,
+@@ -246,6 +256,7 @@ class ICLSystem(ContinualLearningSystem):
+             "model": self.model,
+             "temperature": self.temperature,
+             "seed": self.seed,
++            "request_timeout_seconds": self.request_timeout_seconds,
+             "context_tokens": self._count_message_tokens(self.messages),
+             "has_truncated": self.has_truncated_flag,
+             "truncation_count": self.truncation_count,
+diff --git a/src/systems/utils/structured_output.py b/src/systems/utils/structured_output.py
+index 87d07cf..97373f1 100644
+--- a/src/systems/utils/structured_output.py
++++ b/src/systems/utils/structured_output.py
+@@ -243,6 +243,7 @@ def _with_sampling_controls(
+     *,
+     temperature: float | None,
+     seed: int | None,
++    timeout: float | None,
+ ) -> dict[str, Any]:
+     """Add explicitly configured sampling controls to a completion request.
+
+@@ -256,9 +257,22 @@ def _with_sampling_controls(
+         controlled_kwargs["temperature"] = temperature
+     if seed is not None:
+         controlled_kwargs["seed"] = seed
++    if timeout is not None:
++        controlled_kwargs["timeout"] = timeout
+     return controlled_kwargs
+
+
++def _response_metadata(response: Any) -> dict[str, Any] | None:
++    """Return provider metadata needed for reproducibility audits."""
++    if isinstance(response, dict):
++        fingerprint = response.get("system_fingerprint")
++    else:
++        fingerprint = getattr(response, "system_fingerprint", None)
++    if fingerprint is None:
++        return None
++    return {"system_fingerprint": str(fingerprint)}
++
++
+ def completion_with_structured_output(
+     model: str,
+     messages: list[dict],
+@@ -266,6 +280,7 @@ def completion_with_structured_output(
+     *,
+     temperature: float | None = None,
+     seed: int | None = None,
++    timeout: float | None = None,
+ ) -> tuple[BaseModel, UsageEvent]:
+     """
+     Call LLM and parse response into a Pydantic model.
+@@ -297,6 +312,7 @@ def completion_with_structured_output(
+         completion_kwargs,
+         temperature=temperature,
+         seed=seed,
++        timeout=timeout,
+     )
+
+     refusal_retry_used = False
+@@ -314,6 +330,7 @@ def completion_with_structured_output(
+                         model=model,
+                         response=response,
+                         call_type="completion",
++                        metadata=_response_metadata(response),
+                     ),
+                 )
+             else:
+@@ -326,6 +343,7 @@ def completion_with_structured_output(
+                         model=model,
+                         response=response,
+                         call_type="completion",
++                        metadata=_response_metadata(response),
+                     ),
+                 )
+         except Exception as exc:
+@@ -367,6 +385,7 @@ def completion_with_structured_output(
+                     _prompt_based_kwargs(model, messages, response_schema),
+                     temperature=temperature,
+                     seed=seed,
++                    timeout=timeout,
+                 )
+                 continue
+             if not is_retryable_llm_exception(exc) or attempt == _MAX_RETRIES:
+diff --git a/tests/test_structured_output.py b/tests/test_structured_output.py
+index c9c0b04..3e09afc 100644
+--- a/tests/test_structured_output.py
++++ b/tests/test_structured_output.py
+@@ -512,6 +512,7 @@ class TestSamplingControls:
+         assert parsed.answer == "ok"
+         assert "temperature" not in captured
+         assert "seed" not in captured
++        assert "timeout" not in captured
+
+     def test_sampling_controls_survive_schema_fallback(self, monkeypatch):
+         monkeypatch.setattr(
+@@ -537,6 +538,7 @@ class TestSamplingControls:
+             response_schema=RetryTestSchema,
+             temperature=0.0,
+             seed=17,
++            timeout=60.0,
+         )
+
+         assert parsed.answer == "ok"
+@@ -546,6 +548,38 @@ class TestSamplingControls:
+         for call in calls:
+             assert call["temperature"] == 0.0
+             assert call["seed"] == 17
++            assert call["timeout"] == 60.0
++
++    def test_completion_records_system_fingerprint(self, monkeypatch):
++        monkeypatch.setattr(
++            structured_output, "_model_supports_response_format", lambda _model: False
++        )
++        captured = {}
++
++        def fake_usage_builder(**kwargs):
++            captured.update(kwargs)
++            return UsageEvent(call_type="completion", model="test-model")
++
++        response = FakeResponse('{"answer":"ok"}')
++        response.system_fingerprint = "fp_test"
++        monkeypatch.setattr(
++            structured_output, "build_usage_event_from_response", fake_usage_builder
++        )
++        monkeypatch.setattr(
++            structured_output.litellm,
++            "completion",
++            lambda **kwargs: response,
++        )
++
++        parsed, usage = completion_with_structured_output(
++            model="test-model",
++            messages=[{"role": "user", "content": "hello"}],
++            response_schema=RetryTestSchema,
++        )
++
++        assert parsed.answer == "ok"
++        assert usage.model == "test-model"
++        assert captured["metadata"] == {"system_fingerprint": "fp_test"}
+
+
+ # ---------------------------------------------------------------------------
+diff --git a/tests/test_token_budget_systems.py b/tests/test_token_budget_systems.py
+index 905c56a..c72cb30 100644
+--- a/tests/test_token_budget_systems.py
++++ b/tests/test_token_budget_systems.py
+@@ -137,16 +137,20 @@ def test_icl_forwards_and_records_sampling_controls(monkeypatch):
+         provider_mode="litellm_chat",
+         temperature=0.0,
+         seed=17,
++        request_timeout_seconds=60.0,
+     )
+     response = system.respond(Query(prompt="hello", response_schema=DummyAction))
+
+     assert captured["temperature"] == 0.0
+     assert captured["seed"] == 17
++    assert captured["timeout"] == 60.0
+     assert response.metadata["temperature"] == 0.0
+     assert response.metadata["seed"] == 17
++    assert response.metadata["request_timeout_seconds"] == 60.0
+     artifacts = system.get_run_artifacts()
+     assert artifacts["temperature"] == 0.0
+     assert artifacts["seed"] == 17
++    assert artifacts["request_timeout_seconds"] == 60.0
+
+
+ def test_icl_rejects_sampling_controls_on_native_provider_path():
+@@ -160,6 +164,17 @@ def test_icl_rejects_sampling_controls_on_native_provider_path():
+         )
+
+
++@pytest.mark.parametrize("invalid_timeout", [0, -1, -0.5])
++def test_icl_rejects_invalid_request_timeout(invalid_timeout):
++    with pytest.raises(ValueError, match="request_timeout_seconds"):
++        ICLSystem(
++            model="test-model",
++            max_tokens=4_096,
++            provider_mode="litellm_chat",
++            request_timeout_seconds=invalid_timeout,
++        )
++
++
+ def test_icl_replay_rebuilds_exact_prefix_without_model_call(monkeypatch):
+     calls = []
