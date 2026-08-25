@@ -1,0 +1,277 @@
+diff --git a/src/tasks/database_exploration/prompts.py b/src/tasks/database_exploration/prompts.py
+index 55032cb..3208240 100644
+--- a/src/tasks/database_exploration/prompts.py
++++ b/src/tasks/database_exploration/prompts.py
+@@ -73,3 +73,9 @@ FEEDBACK_BUDGET_EXCEEDED = (
+     "treated as incorrect.\n"
+     "The correct answer was: {ground_truth}"
+ )
++
++VERDICT_ONLY_FEEDBACK = (
++    "Question {question_num}: EVALUATOR VERDICT: {verdict}\n"
++    "Your submitted answer: {answer}\n"
++    "Exploratory queries used: {num_queries}"
++)
+diff --git a/src/tasks/database_exploration/task.py b/src/tasks/database_exploration/task.py
+index 0935865..872a82d 100644
+--- a/src/tasks/database_exploration/task.py
++++ b/src/tasks/database_exploration/task.py
+@@ -44,6 +44,7 @@ from .prompts import (
+     FEEDBACK_TIMEOUT,
+     QUERY_RESULT_TEMPLATE,
+     QUESTION_TEMPLATE,
++    VERDICT_ONLY_FEEDBACK,
+ )
+ 
+ RESPONSE_TIMEOUT_SECONDS = 60.0
+@@ -148,6 +149,7 @@ class DatabaseExploration(ContinualLearningTask):
+         max_queries_per_question: int = 15,
+         seed: int = 42,
+         response_timeout_seconds: float = RESPONSE_TIMEOUT_SECONDS,
++        feedback_mode: str = "official",
+     ):
+         if num_instances is not None:
+             num_questions = num_instances
+@@ -206,6 +208,11 @@ class DatabaseExploration(ContinualLearningTask):
+         self.max_queries_per_question = max_queries_per_question
+         self.seed = seed
+         self.response_timeout_seconds = response_timeout_seconds
++        if feedback_mode not in {"official", "verdict_only"}:
++            raise ValueError(
++                "feedback_mode must be either 'official' or 'verdict_only'"
++            )
++        self.feedback_mode = feedback_mode
+ 
+         # Schema drift config
+         variant_config = self.variant_spec.config if self.variant_spec else {}
+@@ -654,32 +661,41 @@ class DatabaseExploration(ContinualLearningTask):
+ 
+         gt_sql = q.get("sql", "N/A").strip()
+ 
+-        if timed_out:
+-            feedback = FEEDBACK_TIMEOUT.format(
+-                question_num=question_num,
+-                ground_truth=q["answer"],
+-                ground_truth_sql=gt_sql,
+-            )
+-        elif budget_exceeded:
+-            feedback = FEEDBACK_BUDGET_EXCEEDED.format(
+-                question_num=question_num,
+-                ground_truth=q["answer"],
+-                ground_truth_sql=gt_sql,
+-            )
+-        elif correct:
+-            feedback = FEEDBACK_CORRECT.format(
++        true_verdict = "PASS" if correct else "FAIL"
++        if self.feedback_mode == "verdict_only":
++            feedback = VERDICT_ONLY_FEEDBACK.format(
+                 question_num=question_num,
++                verdict=true_verdict,
+                 answer=answer,
+                 num_queries=self._queries_this_question,
+             )
+         else:
+-            feedback = FEEDBACK_INCORRECT.format(
+-                question_num=question_num,
+-                answer=answer,
+-                ground_truth=q["answer"],
+-                ground_truth_sql=gt_sql,
+-                num_queries=self._queries_this_question,
+-            )
++            if timed_out:
++                feedback = FEEDBACK_TIMEOUT.format(
++                    question_num=question_num,
++                    ground_truth=q["answer"],
++                    ground_truth_sql=gt_sql,
++                )
++            elif budget_exceeded:
++                feedback = FEEDBACK_BUDGET_EXCEEDED.format(
++                    question_num=question_num,
++                    ground_truth=q["answer"],
++                    ground_truth_sql=gt_sql,
++                )
++            elif correct:
++                feedback = FEEDBACK_CORRECT.format(
++                    question_num=question_num,
++                    answer=answer,
++                    num_queries=self._queries_this_question,
++                )
++            else:
++                feedback = FEEDBACK_INCORRECT.format(
++                    question_num=question_num,
++                    answer=answer,
++                    ground_truth=q["answer"],
++                    ground_truth_sql=gt_sql,
++                    num_queries=self._queries_this_question,
++                )
+ 
+         self._current_question_idx += 1
+         self._queries_this_question = 0
+@@ -687,10 +703,23 @@ class DatabaseExploration(ContinualLearningTask):
+         done = self._current_question_idx >= len(self.instances)
+         self._awaiting_action = not done
+ 
++        observation_metadata: dict[str, Any] = {"instance_complete": True}
++        if self.feedback_mode == "verdict_only":
++            observation_metadata.update(
++                {
++                    "feedback_mode": "verdict_only",
++                    "true_verdict": true_verdict,
++                    "submitted_answer": answer,
++                    "num_queries": record["num_queries"],
++                    "timed_out": timed_out,
++                    "budget_exceeded": budget_exceeded,
++                }
++            )
++
+         return Observation(
+             content=feedback,
+             instance_complete=True,
+-            metadata={"instance_complete": True},
++            metadata=observation_metadata,
+         ), done
+ 
+     def _execute_sql(self, sql: str) -> str:
+diff --git a/tests/test_database_exploration_verdict_feedback.py b/tests/test_database_exploration_verdict_feedback.py
+new file mode 100644
+index 0000000..9dd8e78
+--- /dev/null
++++ b/tests/test_database_exploration_verdict_feedback.py
+@@ -0,0 +1,137 @@
++"""Tests for G2's opt-in verdict-only database feedback channel."""
++
++from __future__ import annotations
++
++import pytest
++
++from src.interface import Response
++from src.tasks.database_exploration.prompts import FEEDBACK_INCORRECT
++from src.tasks.database_exploration.task import DatabaseAction, DatabaseExploration
++
++
++def _make_task(feedback_mode: str) -> DatabaseExploration:
++    task = DatabaseExploration(
++        db_path="unused.db",
++        questions_path="unused.json",
++        num_questions=1,
++        max_queries_per_question=15,
++        feedback_mode=feedback_mode,
++    )
++    task.instances = [
++        {
++            "question_id": 901,
++            "question": "What is the synthetic value?",
++            "answer": 42,
++            "answer_type": "integer",
++            "tolerance": 0,
++            "difficulty": "synthetic",
++            "sql": "SELECT 42",
++        }
++    ]
++    task._current_question_idx = 0
++    task._queries_this_question = 3
++    task._question_history = []
++    task._instance_outcomes = []
++    task._awaiting_action = True
++    return task
++
++
++def _answer(task: DatabaseExploration, submitted: str):
++    return task.step(
++        Response(
++            action=DatabaseAction(
++                action="ANSWER",
++                content=submitted,
++            )
++        )
++    )
++
++
++@pytest.mark.parametrize(
++    ("submitted", "verdict", "success"),
++    [
++        ("42", "PASS", True),
++        ("7", "FAIL", False),
++    ],
++)
++def test_verdict_only_feedback_preserves_scoring(submitted, verdict, success):
++    official = _make_task("official")
++    verdict_only = _make_task("verdict_only")
++
++    official_step = _answer(official, submitted)
++    verdict_step = _answer(verdict_only, submitted)
++
++    assert official._question_history == verdict_only._question_history
++    assert official_step.instance_outcome == verdict_step.instance_outcome
++    assert verdict_step.instance_outcome is not None
++    assert verdict_step.instance_outcome.success is success
++
++    official_result = official.evaluate()
++    verdict_result = verdict_only.evaluate()
++    assert official_result.metrics == verdict_result.metrics
++    assert official_result.eval_metrics == verdict_result.eval_metrics
++    assert official_result.instance_outcomes == verdict_result.instance_outcomes
++
++    assert verdict_step.observation.content == (
++        f"Question 1: EVALUATOR VERDICT: {verdict}\n"
++        f"Your submitted answer: {submitted}\n"
++        "Exploratory queries used: 3"
++    )
++    assert verdict_step.observation.metadata == {
++        "instance_complete": True,
++        "feedback_mode": "verdict_only",
++        "true_verdict": verdict,
++        "submitted_answer": submitted,
++        "num_queries": 3,
++        "timed_out": False,
++        "budget_exceeded": False,
++    }
++
++
++def test_verdict_only_failure_does_not_reveal_ground_truth_or_sql():
++    task = _make_task("verdict_only")
++
++    step = _answer(task, "7")
++
++    assert "42" not in step.observation.content
++    assert "SELECT" not in step.observation.content
++    assert "Correct answer" not in step.observation.content
++
++
++def test_verdict_only_timeout_uses_the_same_envelope_without_ground_truth():
++    task = _make_task("verdict_only")
++
++    step = task.step(
++        Response(
++            action=DatabaseAction(action="ANSWER", content="ignored"),
++            metadata={"latency_timeout": True},
++        )
++    )
++
++    assert step.observation.content == (
++        "Question 1: EVALUATOR VERDICT: FAIL\n"
++        "Your submitted answer: \n"
++        "Exploratory queries used: 3"
++    )
++    assert "42" not in step.observation.content
++    assert step.observation.metadata["timed_out"] is True
++
++
++def test_default_official_feedback_is_unchanged():
++    task = _make_task("official")
++
++    step = _answer(task, "7")
++
++    assert step.observation.content == FEEDBACK_INCORRECT.format(
++        question_num=1,
++        answer="7",
++        ground_truth=42,
++        ground_truth_sql="SELECT 42",
++        num_queries=3,
++    )
++    assert step.observation.metadata == {"instance_complete": True}
++
++
++def test_invalid_feedback_mode_is_rejected():
++    with pytest.raises(ValueError, match="feedback_mode"):
++        _make_task("unknown")
