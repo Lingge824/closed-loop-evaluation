@@ -1,0 +1,85 @@
+diff --git a/src/systems/utils/structured_output.py b/src/systems/utils/structured_output.py
+index 97373f1..0072fb9 100644
+--- a/src/systems/utils/structured_output.py
++++ b/src/systems/utils/structured_output.py
+@@ -29,6 +29,8 @@ _RETRYABLE_LOCAL_EXCEPTIONS = (
+ _RETRYABLE_BAD_REQUEST_SUBSTRINGS = (
+     "could not parse the json body of your request",
+     "request contains an invalid argument",
++    "tool_use_failed",
++    "failed to call a function",
+ )
+ # Policy: every 5xx status is treated as transient, plus the three 4xx codes
+ # that the HTTP RFCs and major providers explicitly mark as retryable.
+diff --git a/tests/test_structured_output.py b/tests/test_structured_output.py
+index 3e09afc..fdfb745 100644
+--- a/tests/test_structured_output.py
++++ b/tests/test_structured_output.py
+@@ -315,6 +315,19 @@ class TestRetryPolicy:
+         )
+         assert is_retryable_llm_exception(exc) is True
+
++    @pytest.mark.parametrize(
++        "message",
++        [
++            'GroqException - {"code":"tool_use_failed"}',
++            "Failed to call a function. Please adjust your prompt.",
++        ],
++    )
++    def test_groq_tool_use_failures_are_retryable(self, monkeypatch, message):
++        monkeypatch.setattr(
++            structured_output.litellm, "BadRequestError", FakeBadRequestError
++        )
++        assert is_retryable_llm_exception(FakeBadRequestError(message)) is True
++
+     def test_other_bad_request_errors_fail_fast(self, monkeypatch):
+         monkeypatch.setattr(
+             structured_output.litellm, "BadRequestError", FakeBadRequestError
+@@ -452,6 +465,47 @@ class TestExtractHttpStatus:
+         assert parsed.answer == "ok"
+         assert calls["count"] == 2
+
++    def test_completion_retries_groq_tool_failure_with_identical_request(
++        self, monkeypatch
++    ):
++        monkeypatch.setattr(
++            structured_output, "_model_supports_response_format", lambda _model: True
++        )
++        monkeypatch.setattr(
++            structured_output,
++            "build_usage_event_from_response",
++            lambda **kwargs: UsageEvent(call_type="completion", model="test-model"),
++        )
++        monkeypatch.setattr(structured_output.time, "sleep", lambda _seconds: None)
++        monkeypatch.setattr(
++            structured_output.litellm, "BadRequestError", FakeBadRequestError
++        )
++        calls = []
++
++        def fake_completion(**kwargs):
++            calls.append(dict(kwargs))
++            if len(calls) == 1:
++                raise FakeBadRequestError(
++                    'GroqException - {"code":"tool_use_failed",'
++                    '"message":"Failed to call a function"}'
++                )
++            return FakeResponse('{"answer":"ok"}')
++
++        monkeypatch.setattr(structured_output.litellm, "completion", fake_completion)
++
++        parsed, _usage = completion_with_structured_output(
++            model="groq/qwen/qwen3.6-27b",
++            messages=[{"role": "user", "content": "hello"}],
++            response_schema=RetryTestSchema,
++            temperature=0.0,
++            seed=7,
++            timeout=60.0,
++        )
++
++        assert parsed.answer == "ok"
++        assert len(calls) == 2
++        assert calls[0] == calls[1]
++
+     def test_completion_does_not_retry_other_bad_requests(self, monkeypatch):
+         monkeypatch.setattr(
+             structured_output, "_model_supports_response_format", lambda _model: False

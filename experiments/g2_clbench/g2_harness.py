@@ -46,7 +46,8 @@ FROZEN_OVERLAY_HASHES = {
     "0002-clbench-verdict-only-feedback.patch": "009f98693f2cb913744ca617a2fec03551e2408079964747297860664ad5ec88",
     "0003-clbench-verdict-token-flip.patch": "d78fceed1e0fcb0833c7c70a3ef38b44fd8155a195a7372d7af55f67ac696c50",
     "0004-clbench-exact-prefix-replay.patch": "f3e1d481471083df02ac5ba68bdc67fe44415c26191c71bae41ae37efd41c275",
-    "0005-clbench-request-timeout-metadata.patch": "3f07cda39fc354de76ea74941bf3c0629f7203ecd8e30ae3206d6117b5688b58",
+    "0005-clbench-request-timeout-metadata.patch": "a64ec887d51777bf6c45e471a3d3504c50b06aebdd6a3aef935a5811dd4a276d",
+    "0006-clbench-retry-groq-tool-use-failures.patch": "2004ccb89f46e7294fcb4c1979a6c4dc3536a4c1576af6a2fcde4be0f9c214a7",
 }
 
 VERDICT_RE = re.compile(r"(EVALUATOR VERDICT:\s*)(PASS|FAIL)\b")
