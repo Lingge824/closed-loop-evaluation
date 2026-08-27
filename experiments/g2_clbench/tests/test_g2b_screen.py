@@ -47,8 +47,12 @@ class FakeResponse:
 
 def test_candidate_order_is_frozen():
     assert [candidate.model for candidate in screen.CANDIDATES] == [
-        "gemini-2.5-flash",
-        "gemini-2.5-flash-lite",
+        "gemini-3.6-flash",
+        "gemini-3.5-flash-lite",
+    ]
+    assert [candidate.reasoning_effort for candidate in screen.CANDIDATES] == [
+        "minimal",
+        "minimal",
     ]
 
 
@@ -64,11 +68,11 @@ def test_completion_kwargs_pin_controls():
     candidate = screen.CANDIDATES[0]
     kwargs = screen.completion_kwargs(candidate, [{"role": "user", "content": "x"}])
     assert kwargs["model"] == candidate.model
-    assert kwargs["temperature"] == 0.0
+    assert kwargs["temperature"] == 1.0
     assert kwargs["seed"] == 20260827
     assert kwargs["timeout"] == 90.0
     assert kwargs["max_output_tokens"] == 128
-    assert kwargs["thinking_budget"] == 0
+    assert kwargs["thinking_level"] == "MINIMAL"
     assert kwargs["response_schema"] == screen.ScreenAction.model_json_schema()
     assert screen.MAX_INPUT_TOKENS_PER_CANDIDATE == 1_200_000
     assert screen.MAX_ESTIMATED_COST_PER_CANDIDATE_USD == 2.00
@@ -86,6 +90,34 @@ def test_native_gemini_payload_preserves_multiturn_roles():
     ]
 
 
+def test_native_gemini_payload_replays_thought_signature_exactly():
+    provider_content = {
+        "role": "model",
+        "parts": [
+            {
+                "text": '{"action":"ANSWER","content":"ok"}',
+                "thoughtSignature": "opaque-signature",
+            }
+        ],
+    }
+    response = {"candidates": [{"content": provider_content}]}
+    action = screen.ScreenAction(action="ANSWER", content="ok")
+    history_message = screen._gemini_history_message(response, action)
+
+    assert history_message["gemini_content"] is provider_content
+    assert screen._gemini_contents(
+        [
+            {"role": "user", "content": "question"},
+            history_message,
+            {"role": "user", "content": "next question"},
+        ]
+    ) == [
+        {"role": "user", "parts": [{"text": "question"}]},
+        provider_content,
+        {"role": "user", "parts": [{"text": "next question"}]},
+    ]
+
+
 def test_native_gemini_response_is_parsed_and_metered():
     response = {
         "candidates": [
@@ -98,7 +130,7 @@ def test_native_gemini_response_is_parsed_and_metered():
             "thoughtsTokenCount": 0,
         },
         "responseId": "gemini_response",
-        "modelVersion": "gemini-2.5-flash",
+        "modelVersion": "gemini-3.6-flash",
     }
     assert screen._extract_action(response).content == "ok"
     assert screen._usage_payload(response) == {
@@ -135,13 +167,13 @@ def test_native_completion_sends_frozen_controls(monkeypatch):
             [{"role": "user", "content": "synthetic"}],
         )
     )
-    assert captured["url"].endswith("/v1beta/models/gemini-2.5-flash:generateContent")
+    assert captured["url"].endswith("/v1beta/models/gemini-3.6-flash:generateContent")
     assert captured["timeout"] == 90.0
     config = captured["payload"]["generationConfig"]
-    assert config["temperature"] == 0.0
+    assert config["temperature"] == 1.0
     assert config["seed"] == 20260827
     assert config["maxOutputTokens"] == 128
-    assert config["thinkingConfig"] == {"thinkingBudget": 0}
+    assert config["thinkingConfig"] == {"thinkingLevel": "MINIMAL"}
     assert config["responseMimeType"] == "application/json"
     assert config["responseJsonSchema"] == screen.ScreenAction.model_json_schema()
 
@@ -262,6 +294,42 @@ def test_schema_or_nonce_failure_is_not_retried(monkeypatch):
     assert result["passed"] is False
     assert result["failure"]["category"] == "model_failure"
     assert calls["count"] == 1
+
+
+def test_private_provider_error_is_recorded_but_not_published(monkeypatch):
+    monkeypatch.setattr(
+        screen,
+        "SESSIONS",
+        (screen.SessionSpec("tiny", 1, 80),),
+    )
+    monkeypatch.setattr(screen, "EXPECTED_CALLS", 1)
+
+    def completion(**_kwargs):
+        raise screen.GeminiAPIError(
+            "model is unavailable to this project",
+            status_code=404,
+        )
+
+    candidate_result = screen.run_candidate(
+        screen.CANDIDATES[0],
+        completion=completion,
+        sleep=lambda _seconds: None,
+        monotonic=lambda: 100.0,
+        progress=lambda _message: None,
+    )
+    assert candidate_result["failure_details"] == {
+        "exception_type": "GeminiAPIError",
+        "status_code": 404,
+        "provider_message": "model is unavailable to this project",
+    }
+
+    private_screen = {
+        "candidate_results": [candidate_result],
+        "status": "no_candidate_passed",
+    }
+    public = screen.public_summary(private_screen)
+    assert "records" not in public["candidate_results"][0]
+    assert "failure_details" not in public["candidate_results"][0]
 
 
 def test_cost_guard_stops_candidate(monkeypatch):

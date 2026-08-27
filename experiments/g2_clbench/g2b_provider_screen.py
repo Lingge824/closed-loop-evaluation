@@ -20,9 +20,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-SCREEN_VERSION = "g2b-provider-screen-gemini-amendment-001"
+SCREEN_VERSION = "g2b-provider-screen-gemini-amendment-002"
 SCREEN_SEED = 20260827
-TEMPERATURE = 0.0
+TEMPERATURE = 1.0
 TIMEOUT_SECONDS = 90.0
 MAX_COMPLETION_TOKENS = 128
 GEMINI_API_VERSION = "v1beta"
@@ -49,20 +49,20 @@ CANDIDATES = (
     Candidate(
         rank=1,
         name="primary",
-        model="gemini-2.5-flash",
-        reasoning_effort="none",
-        input_usd_per_million=0.30,
-        cached_input_usd_per_million=0.03,
-        output_usd_per_million=2.50,
+        model="gemini-3.6-flash",
+        reasoning_effort="minimal",
+        input_usd_per_million=0.75,
+        cached_input_usd_per_million=0.075,
+        output_usd_per_million=3.75,
     ),
     Candidate(
         rank=2,
         name="compatibility_fallback",
-        model="gemini-2.5-flash-lite",
-        reasoning_effort="none",
-        input_usd_per_million=0.10,
-        cached_input_usd_per_million=0.01,
-        output_usd_per_million=0.40,
+        model="gemini-3.5-flash-lite",
+        reasoning_effort="minimal",
+        input_usd_per_million=0.30,
+        cached_input_usd_per_million=0.03,
+        output_usd_per_million=2.50,
     ),
 )
 
@@ -92,9 +92,16 @@ class ScreenAction(BaseModel):
 class ScreenFailure(RuntimeError):
     """A frozen feasibility criterion failed."""
 
-    def __init__(self, message: str, *, category: str):
+    def __init__(
+        self,
+        message: str,
+        *,
+        category: str,
+        private_details: dict[str, Any] | None = None,
+    ):
         super().__init__(message)
         self.category = category
+        self.private_details = private_details
 
 
 class GeminiAPIError(RuntimeError):
@@ -358,7 +365,7 @@ def _response_metadata(response: Any) -> dict[str, str | None]:
 
 
 def completion_kwargs(
-    candidate: Candidate, messages: list[dict[str, str]]
+    candidate: Candidate, messages: list[dict[str, Any]]
 ) -> dict[str, Any]:
     kwargs: dict[str, Any] = {
         "model": candidate.model,
@@ -368,29 +375,64 @@ def completion_kwargs(
         "seed": SCREEN_SEED,
         "timeout": TIMEOUT_SECONDS,
         "max_output_tokens": MAX_COMPLETION_TOKENS,
-        "thinking_budget": 0,
+        "thinking_level": "MINIMAL",
     }
     return kwargs
 
 
-def _gemini_contents(messages: list[dict[str, str]]) -> list[dict[str, Any]]:
+def _gemini_contents(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     contents = []
     for message in messages:
+        provider_content = message.get("gemini_content")
+        if message["role"] == "assistant" and isinstance(provider_content, dict):
+            contents.append(provider_content)
+            continue
         role = "model" if message["role"] == "assistant" else "user"
         contents.append({"role": role, "parts": [{"text": message["content"]}]})
     return contents
 
 
+def _gemini_history_message(
+    response: Any, action: ScreenAction
+) -> dict[str, Any]:
+    """Preserve Gemini 3 thought signatures in the next request's history."""
+    fallback = {"role": "assistant", "content": action.model_dump_json()}
+    if not isinstance(response, dict):
+        return fallback
+    candidates = response.get("candidates") or []
+    if not candidates or not isinstance(candidates[0], dict):
+        return fallback
+    provider_content = candidates[0].get("content")
+    if not isinstance(provider_content, dict):
+        return fallback
+    if provider_content.get("role") not in {None, "model"}:
+        raise ScreenFailure(
+            "provider returned an invalid model-history role",
+            category="model_failure",
+        )
+    parts = provider_content.get("parts")
+    if not isinstance(parts, list) or not parts:
+        raise ScreenFailure(
+            "provider returned invalid model-history parts",
+            category="model_failure",
+        )
+    return {
+        "role": "assistant",
+        "content": action.model_dump_json(),
+        "gemini_content": provider_content,
+    }
+
+
 def native_completion(
     *,
     model: str,
-    messages: list[dict[str, str]],
+    messages: list[dict[str, Any]],
     response_schema: dict[str, Any],
     temperature: float,
     seed: int,
     timeout: float,
     max_output_tokens: int,
-    thinking_budget: int,
+    thinking_level: str,
 ) -> dict[str, Any]:
     """Call Gemini's native API without an adapter or model output retry."""
     api_key = os.environ.get("GEMINI_API_KEY")
@@ -404,7 +446,7 @@ def native_completion(
             "maxOutputTokens": max_output_tokens,
             "responseMimeType": "application/json",
             "responseJsonSchema": response_schema,
-            "thinkingConfig": {"thinkingBudget": thinking_budget},
+            "thinkingConfig": {"thinkingLevel": thinking_level},
         },
     }
     url = f"{GEMINI_API_ROOT}/models/{model}:generateContent"
@@ -449,6 +491,16 @@ def _estimated_cost(candidate: Candidate, totals: dict[str, int]) -> float:
     ) / 1_000_000
 
 
+def _private_provider_details(exc: BaseException) -> dict[str, Any]:
+    details: dict[str, Any] = {
+        "exception_type": type(exc).__name__,
+        "status_code": _status_code(exc),
+    }
+    if isinstance(exc, GeminiAPIError):
+        details["provider_message"] = str(exc)
+    return details
+
+
 def run_candidate(
     candidate: Candidate,
     *,
@@ -462,10 +514,11 @@ def run_candidate(
     last_start: float | None = None
     started_at = _utc_now()
     failure: dict[str, str] | None = None
+    failure_details: dict[str, Any] | None = None
 
     try:
         for session in SESSIONS:
-            messages: list[dict[str, str]] = []
+            messages: list[dict[str, Any]] = []
             for turn in range(1, session.calls + 1):
                 prompt = build_user_message(candidate, session, turn)
                 messages.append({"role": "user", "content": prompt})
@@ -528,9 +581,7 @@ def run_candidate(
                                 "frozen provider-screen cost guard crossed",
                                 category="account_failure",
                             )
-                        messages.append(
-                            {"role": "assistant", "content": action.model_dump_json()}
-                        )
+                        messages.append(_gemini_history_message(response, action))
                         break
                     except ScreenFailure:
                         raise
@@ -539,11 +590,13 @@ def run_candidate(
                             raise ScreenFailure(
                                 f"account/API readiness failure: {type(exc).__name__}",
                                 category="account_failure",
+                                private_details=_private_provider_details(exc),
                             ) from exc
                         if not is_retryable(exc):
                             raise ScreenFailure(
                                 f"nonretryable provider failure: {type(exc).__name__}",
                                 category="model_failure",
+                                private_details=_private_provider_details(exc),
                             ) from exc
                         if retries >= len(RETRY_DELAYS_SECONDS):
                             failure_category = (
@@ -554,12 +607,14 @@ def run_candidate(
                             raise ScreenFailure(
                                 f"transient retry budget exhausted: {type(exc).__name__}",
                                 category=failure_category,
+                                private_details=_private_provider_details(exc),
                             ) from exc
                         sleep(RETRY_DELAYS_SECONDS[retries])
                         retries += 1
                         total_retries += 1
     except ScreenFailure as exc:
         failure = {"category": exc.category, "message": str(exc)}
+        failure_details = exc.private_details
 
     totals = {
         key: sum(int(record[key]) for record in records)
@@ -586,6 +641,7 @@ def run_candidate(
         "estimated_cost_usd": round(_estimated_cost(candidate, totals), 6),
         "passed": passed,
         "failure": failure,
+        "failure_details": failure_details,
         "records": records,
     }
 
@@ -638,6 +694,7 @@ def public_summary(screen: dict[str, Any]) -> dict[str, Any]:
     for candidate_result in screen["candidate_results"]:
         sanitized = dict(candidate_result)
         sanitized.pop("records", None)
+        sanitized.pop("failure_details", None)
         results.append(sanitized)
     return {**screen, "candidate_results": results}
 
