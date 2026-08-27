@@ -1,0 +1,102 @@
+{
+  "aggregate_signal_counts": {
+    "empty_content": 6,
+    "http_200": 0,
+    "json_validate_failed": 3,
+    "rate_limit_429": 41,
+    "schema_or_parse_failure": 0,
+    "tool_use_failed": 9
+  },
+  "audit_version": "g2-operational-audit-v1",
+  "completed_artifacts": {
+    "clean_trajectories": 0,
+    "counterfactual_trajectories": 0,
+    "public_seed_summaries": 0
+  },
+  "generated_at": "2026-08-27T06:44:17.695326+00:00",
+  "log_count": 6,
+  "logs": [
+    {
+      "path": "g2_formal_raw_run_20260827_115845.log",
+      "sha256": "7a58f842251b05f7cb9b4288ade7ea47755fa57e1c63983cfc9a00a5b63cfb11",
+      "signal_counts": {
+        "empty_content": 0,
+        "http_200": 0,
+        "json_validate_failed": 0,
+        "rate_limit_429": 13,
+        "schema_or_parse_failure": 0,
+        "tool_use_failed": 0
+      },
+      "size_bytes": 9821
+    },
+    {
+      "path": "g2_formal_run_20260825_204232.log",
+      "sha256": "2783ac1a901cdb4298d87bc8cb12e03900955f2e9e1c433c1738694cbcd0d54f",
+      "signal_counts": {
+        "empty_content": 0,
+        "http_200": 0,
+        "json_validate_failed": 0,
+        "rate_limit_429": 0,
+        "schema_or_parse_failure": 0,
+        "tool_use_failed": 3
+      },
+      "size_bytes": 9852
+    },
+    {
+      "path": "g2_formal_run_20260825_213356.log",
+      "sha256": "068ba2395f890bb4f25d0423d77e9913be9988d1422fbe697d86067766d026f2",
+      "signal_counts": {
+        "empty_content": 0,
+        "http_200": 0,
+        "json_validate_failed": 0,
+        "rate_limit_429": 0,
+        "schema_or_parse_failure": 0,
+        "tool_use_failed": 3
+      },
+      "size_bytes": 11228
+    },
+    {
+      "path": "g2_formal_run_20260827_100551.log",
+      "sha256": "711bcfa662833c4238cab7dbcc14439ab5c1d9dd2dbdb9bdc5e0feb658ba8680",
+      "signal_counts": {
+        "empty_content": 0,
+        "http_200": 0,
+        "json_validate_failed": 3,
+        "rate_limit_429": 0,
+        "schema_or_parse_failure": 0,
+        "tool_use_failed": 0
+      },
+      "size_bytes": 7821
+    },
+    {
+      "path": "g2_formal_run_20260827_103918.log",
+      "sha256": "fd7a8fb89e995fcd24581b4a40ddd8e8ba1a1e8836f8f198cfb1055876821e4c",
+      "signal_counts": {
+        "empty_content": 3,
+        "http_200": 0,
+        "json_validate_failed": 0,
+        "rate_limit_429": 0,
+        "schema_or_parse_failure": 0,
+        "tool_use_failed": 0
+      },
+      "size_bytes": 5077
+    },
+    {
+      "path": "g2_runtime.log",
+      "sha256": "8946a8f73aecb397b329043f926f0b8bb4230f5ae70da6365c7feb313506a8fb",
+      "signal_counts": {
+        "empty_content": 3,
+        "http_200": 0,
+        "json_validate_failed": 0,
+        "rate_limit_429": 28,
+        "schema_or_parse_failure": 0,
+        "tool_use_failed": 3
+      },
+      "size_bytes": 15386
+    }
+  ],
+  "no_research_outcome": true,
+  "operational_status": "infeasible_no_g2_outcome",
+  "privacy": "hashes_and_pattern_counts_only_no_log_content",
+  "scope": "frozen_g2_groq_qwen_operational_evidence"
+}
