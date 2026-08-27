@@ -1,0 +1,124 @@
+diff --git a/src/systems/utils/structured_output.py b/src/systems/utils/structured_output.py
+index bd635ad..253b7b3 100644
+--- a/src/systems/utils/structured_output.py
++++ b/src/systems/utils/structured_output.py
+@@ -88,7 +88,7 @@ _GRAMMAR_TOO_LARGE_SUBSTRINGS = (
+     "compiled grammar is too large",
+     "simplify your tool schemas",
+ )
+-_GROQ_JSON_OBJECT_MODELS = frozenset({"groq/qwen/qwen3.6-27b"})
++_GROQ_PROMPT_JSON_MODELS = frozenset({"groq/qwen/qwen3.6-27b"})
+ _MAX_RETRIES = 5
+ _BACKOFF_BASE = 2.0
+ _RATE_LIMIT_BACKOFF_BASE = 15.0
+@@ -149,15 +149,17 @@ def _model_supports_response_format(model: str) -> bool:
+         return False
+ 
+ 
+-def _requires_groq_json_object_mode(model: str) -> bool:
+-    """Use Groq's supported JSON mode for models without JSON-schema mode.
++def _requires_groq_prompt_json(model: str) -> bool:
++    """Use prompt-shaped JSON with local validation for frozen Groq Qwen.
+ 
+     LiteLLM currently reports ``response_format`` support for Qwen 3.6 and
+-    translates a Pydantic model into a forced function call. Groq documents
+-    this model as supporting JSON Object Mode, not JSON-Schema Structured
+-    Outputs, so schema-shaped tool calls can fail deterministically.
++    translates a Pydantic model into a forced function call. Groq does not list
++    this model for JSON-Schema Structured Outputs, while JSON Object Mode can
++    still reject malformed generations server-side. Both provider validation
++    paths failed deterministically, so this adapter validates ordinary text
++    locally instead.
+     """
+-    return model.lower() in _GROQ_JSON_OBJECT_MODELS
++    return model.lower() in _GROQ_PROMPT_JSON_MODELS
+ 
+ 
+ def schema_to_prompt_instruction(schema: type[BaseModel]) -> str:
+@@ -307,18 +309,18 @@ def completion_with_structured_output(
+     Returns:
+         Parsed Pydantic model instance.
+     """
+-    use_json_object_mode = _requires_groq_json_object_mode(model)
++    use_groq_prompt_json = _requires_groq_prompt_json(model)
+     use_response_format = (
+-        not use_json_object_mode and _model_supports_response_format(model)
++        not use_groq_prompt_json and _model_supports_response_format(model)
+     )
+ 
+-    if use_json_object_mode:
++    if use_groq_prompt_json:
+         logger.info(
+-            "Model %s uses Groq JSON Object Mode with local schema validation",
++            "Model %s uses prompt-shaped JSON with local schema validation",
+             model,
+         )
+         completion_kwargs = _prompt_based_kwargs(model, messages, response_schema)
+-        completion_kwargs["response_format"] = {"type": "json_object"}
++        completion_kwargs["reasoning_format"] = "parsed"
+     elif use_response_format:
+         completion_kwargs = dict(
+             model=model,
+@@ -469,6 +471,8 @@ def validate_with_coercion(json_str: str, schema: type[BaseModel]) -> BaseModel:
+                 coerced,
+                 set(schema.model_fields.keys()),
+             )
++            if recovered is None:
++                recovered = _scan_for_embedded_object(json_str, schema)
+             if recovered is None:
+                 raise
+             return schema.model_validate(recovered)
+diff --git a/tests/test_structured_output.py b/tests/test_structured_output.py
+index 7634637..fed00cd 100644
+--- a/tests/test_structured_output.py
++++ b/tests/test_structured_output.py
+@@ -568,7 +568,7 @@ class TestSamplingControls:
+         assert "seed" not in captured
+         assert "timeout" not in captured
+ 
+-    def test_groq_qwen_uses_json_object_mode_with_local_schema_validation(
++    def test_groq_qwen_uses_prompt_json_with_local_schema_validation(
+         self, monkeypatch
+     ):
+         monkeypatch.setattr(
+@@ -593,7 +593,8 @@ class TestSamplingControls:
+         )
+ 
+         assert parsed.answer == "ok"
+-        assert captured["response_format"] == {"type": "json_object"}
++        assert "response_format" not in captured
++        assert captured["reasoning_format"] == "parsed"
+         assert "You MUST respond with valid JSON" in captured["messages"][-1][
+             "content"
+         ]
+@@ -602,6 +603,30 @@ class TestSamplingControls:
+         assert captured["seed"] == 7
+         assert captured["timeout"] == 60.0
+ 
++    def test_groq_prompt_json_recovers_final_action_after_raw_reasoning(
++        self, monkeypatch
++    ):
++        self._stub_usage_builder(monkeypatch)
++
++        def fake_completion(**_kwargs):
++            return FakeResponse(
++                '<think>Possible intermediate object: {"other": 1}</think>\n'
++                '{"answer":"ok"}'
++            )
++
++        monkeypatch.setattr(structured_output.litellm, "completion", fake_completion)
++
++        parsed, _usage = completion_with_structured_output(
++            model="groq/qwen/qwen3.6-27b",
++            messages=[{"role": "user", "content": "hello"}],
++            response_schema=RetryTestSchema,
++            temperature=0.0,
++            seed=7,
++            timeout=60.0,
++        )
++
++        assert parsed.answer == "ok"
++
+     def test_sampling_controls_survive_schema_fallback(self, monkeypatch):
+         monkeypatch.setattr(
+             structured_output, "_model_supports_response_format", lambda _model: True

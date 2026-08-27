@@ -49,6 +49,7 @@ FROZEN_OVERLAY_HASHES = {
     "0005-clbench-request-timeout-metadata.patch": "a64ec887d51777bf6c45e471a3d3504c50b06aebdd6a3aef935a5811dd4a276d",
     "0006-clbench-retry-groq-tool-use-failures.patch": "2004ccb89f46e7294fcb4c1979a6c4dc3536a4c1576af6a2fcde4be0f9c214a7",
     "0007-clbench-groq-json-object-mode.patch": "1fc58977baff299a7fe65f5e33aaadb640c780289aa22aac9c1d9ba5ffc6ad2e",
+    "0008-clbench-prompt-json-local-validation.patch": "0493f4bf1c1ce2078fc288cf6f6d1d1d37c2543fb62abc2f4b3716c6a9ee71da",
 }
 
 VERDICT_RE = re.compile(r"(EVALUATOR VERDICT:\s*)(PASS|FAIL)\b")
