@@ -1,0 +1,73 @@
+diff --git a/src/systems/utils/structured_output.py b/src/systems/utils/structured_output.py
+index 253b7b3..c9a3c8e 100644
+--- a/src/systems/utils/structured_output.py
++++ b/src/systems/utils/structured_output.py
+@@ -157,7 +157,9 @@ def _requires_groq_prompt_json(model: str) -> bool:
+     this model for JSON-Schema Structured Outputs, while JSON Object Mode can
+     still reject malformed generations server-side. Both provider validation
+     paths failed deterministically, so this adapter validates ordinary text
+-    locally instead.
++    locally instead. Raw reasoning presentation keeps the provider's complete
++    text in ``message.content`` so the schema-aware local scanner can locate a
++    final action while still rejecting reasoning-only or malformed output.
+     """
+     return model.lower() in _GROQ_PROMPT_JSON_MODELS
+ 
+@@ -320,7 +322,7 @@ def completion_with_structured_output(
+             model,
+         )
+         completion_kwargs = _prompt_based_kwargs(model, messages, response_schema)
+-        completion_kwargs["reasoning_format"] = "parsed"
++        completion_kwargs["reasoning_format"] = "raw"
+     elif use_response_format:
+         completion_kwargs = dict(
+             model=model,
+diff --git a/tests/test_structured_output.py b/tests/test_structured_output.py
+index fed00cd..bfaebc9 100644
+--- a/tests/test_structured_output.py
++++ b/tests/test_structured_output.py
+@@ -594,7 +594,7 @@ class TestSamplingControls:
+ 
+         assert parsed.answer == "ok"
+         assert "response_format" not in captured
+-        assert captured["reasoning_format"] == "parsed"
++        assert captured["reasoning_format"] == "raw"
+         assert "You MUST respond with valid JSON" in captured["messages"][-1][
+             "content"
+         ]
+@@ -627,6 +627,35 @@ class TestSamplingControls:
+ 
+         assert parsed.answer == "ok"
+ 
++    def test_groq_raw_prompt_json_retries_empty_content_with_identical_request(
++        self, monkeypatch
++    ):
++        self._stub_usage_builder(monkeypatch)
++        monkeypatch.setattr(structured_output.time, "sleep", lambda _seconds: None)
++        calls = []
++
++        def fake_completion(**kwargs):
++            calls.append(dict(kwargs))
++            if len(calls) < 3:
++                return FakeResponse(None)
++            return FakeResponse('<think>finished reasoning</think>{"answer":"ok"}')
++
++        monkeypatch.setattr(structured_output.litellm, "completion", fake_completion)
++
++        parsed, _usage = completion_with_structured_output(
++            model="groq/qwen/qwen3.6-27b",
++            messages=[{"role": "user", "content": "hello"}],
++            response_schema=RetryTestSchema,
++            temperature=0.0,
++            seed=7,
++            timeout=60.0,
++        )
++
++        assert parsed.answer == "ok"
++        assert len(calls) == 3
++        assert calls[0] == calls[1] == calls[2]
++        assert calls[0]["reasoning_format"] == "raw"
++
+     def test_sampling_controls_survive_schema_fallback(self, monkeypatch):
+         monkeypatch.setattr(
+             structured_output, "_model_supports_response_format", lambda _model: True
