@@ -4,25 +4,29 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
+import socket
 import time
-from typing import Any, Callable, Literal, Sequence
+import urllib.error
+import urllib.request
+from collections.abc import Callable, Sequence
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Literal
 
-import litellm
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-
-SCREEN_VERSION = "g2b-provider-screen-v1"
+SCREEN_VERSION = "g2b-provider-screen-gemini-amendment-001"
 SCREEN_SEED = 20260827
 TEMPERATURE = 0.0
 TIMEOUT_SECONDS = 90.0
 MAX_COMPLETION_TOKENS = 128
+GEMINI_API_VERSION = "v1beta"
+GEMINI_API_ROOT = f"https://generativelanguage.googleapis.com/{GEMINI_API_VERSION}"
 MIN_START_INTERVAL_SECONDS = 12.0
 RETRY_DELAYS_SECONDS = (20.0, 40.0)
 MAX_TOTAL_TRANSIENT_RETRIES_FOR_PASS = 2
@@ -45,20 +49,20 @@ CANDIDATES = (
     Candidate(
         rank=1,
         name="primary",
-        model="openai/gpt-5.4-mini-2026-03-17",
+        model="gemini-2.5-flash",
         reasoning_effort="none",
-        input_usd_per_million=0.75,
-        cached_input_usd_per_million=0.075,
-        output_usd_per_million=4.50,
+        input_usd_per_million=0.30,
+        cached_input_usd_per_million=0.03,
+        output_usd_per_million=2.50,
     ),
     Candidate(
         rank=2,
         name="compatibility_fallback",
-        model="openai/gpt-4.1-mini-2025-04-14",
-        reasoning_effort=None,
-        input_usd_per_million=0.40,
-        cached_input_usd_per_million=0.10,
-        output_usd_per_million=1.60,
+        model="gemini-2.5-flash-lite",
+        reasoning_effort="none",
+        input_usd_per_million=0.10,
+        cached_input_usd_per_million=0.01,
+        output_usd_per_million=0.40,
     ),
 )
 
@@ -93,11 +97,42 @@ class ScreenFailure(RuntimeError):
         self.category = category
 
 
-WORDS = (
-    "amber bridge calm delta ember field gentle harbor ivory juniper kindle "
-    "lumen meadow north orbit pebble quiet river silver timber umber valley "
-    "willow xenon yellow zephyr"
-).split()
+class GeminiAPIError(RuntimeError):
+    """A sanitized Gemini REST error with a machine-readable HTTP status."""
+
+    def __init__(self, message: str, *, status_code: int | None):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+WORDS = [
+    "amber",
+    "bridge",
+    "calm",
+    "delta",
+    "ember",
+    "field",
+    "gentle",
+    "harbor",
+    "ivory",
+    "juniper",
+    "kindle",
+    "lumen",
+    "meadow",
+    "north",
+    "orbit",
+    "pebble",
+    "quiet",
+    "river",
+    "silver",
+    "timber",
+    "umber",
+    "valley",
+    "willow",
+    "xenon",
+    "yellow",
+    "zephyr",
+]
 
 
 def _utc_now() -> str:
@@ -131,9 +166,7 @@ def expected_nonce(candidate: Candidate, session: SessionSpec, turn: int) -> str
     return f"g2b-screen:{candidate.rank}:{session.name}:{turn:02d}"
 
 
-def build_user_message(
-    candidate: Candidate, session: SessionSpec, turn: int
-) -> str:
+def build_user_message(candidate: Candidate, session: SessionSpec, turn: int) -> str:
     nonce = expected_nonce(candidate, session, turn)
     payload = synthetic_block(session.name, turn, session.characters_per_call)
     return (
@@ -168,13 +201,10 @@ def is_retryable(exc: BaseException) -> bool:
     return isinstance(
         exc,
         (
-            litellm.InternalServerError,
-            litellm.APIConnectionError,
-            litellm.Timeout,
-            litellm.ServiceUnavailableError,
-            litellm.RateLimitError,
             ConnectionError,
             TimeoutError,
+            socket.timeout,
+            urllib.error.URLError,
             OSError,
         ),
     )
@@ -199,6 +229,24 @@ def is_account_failure(exc: BaseException) -> bool:
 
 
 def _extract_action(response: Any) -> ScreenAction:
+    if isinstance(response, dict) and "candidates" in response:
+        candidates = response.get("candidates") or []
+        if not candidates:
+            raise ScreenFailure(
+                "provider returned no candidate", category="model_failure"
+            )
+        parts = candidates[0].get("content", {}).get("parts", [])
+        content = "".join(
+            str(part.get("text", ""))
+            for part in parts
+            if isinstance(part, dict) and not part.get("thought", False)
+        )
+        if not content.strip():
+            raise ScreenFailure(
+                "provider returned empty content", category="model_failure"
+            )
+        return ScreenAction.model_validate_json(content)
+
     message = response.choices[0].message
     parsed = getattr(message, "parsed", None)
     if isinstance(parsed, ScreenAction):
@@ -222,6 +270,33 @@ def _extract_action(response: Any) -> ScreenAction:
 
 
 def _usage_payload(response: Any) -> dict[str, int]:
+    if isinstance(response, dict) and "usageMetadata" in response:
+        usage = response.get("usageMetadata") or {}
+        input_tokens = usage.get("promptTokenCount")
+        cached_tokens = usage.get("cachedContentTokenCount", 0)
+        candidates_tokens = usage.get("candidatesTokenCount", 0)
+        thoughts_tokens = usage.get("thoughtsTokenCount", 0)
+        if (
+            isinstance(input_tokens, bool)
+            or not isinstance(input_tokens, int)
+            or input_tokens < 0
+        ):
+            raise ScreenFailure(
+                "response omitted a nonnegative input-token count",
+                category="model_failure",
+            )
+        for value in (cached_tokens, candidates_tokens, thoughts_tokens):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ScreenFailure(
+                    "response returned invalid usage metadata",
+                    category="model_failure",
+                )
+        return {
+            "input_tokens": input_tokens,
+            "cached_input_tokens": min(cached_tokens, input_tokens),
+            "output_tokens": candidates_tokens + thoughts_tokens,
+        }
+
     usage = getattr(response, "usage", None)
     if usage is None and isinstance(response, dict):
         usage = response.get("usage")
@@ -266,6 +341,14 @@ def _usage_payload(response: Any) -> dict[str, int]:
 
 
 def _response_metadata(response: Any) -> dict[str, str | None]:
+    if isinstance(response, dict):
+        response_id = response.get("responseId")
+        model_version = response.get("modelVersion")
+        return {
+            "response_id": str(response_id) if response_id else None,
+            "system_fingerprint": (str(model_version) if model_version else None),
+        }
+
     response_id = getattr(response, "id", None)
     fingerprint = getattr(response, "system_fingerprint", None)
     return {
@@ -280,16 +363,75 @@ def completion_kwargs(
     kwargs: dict[str, Any] = {
         "model": candidate.model,
         "messages": messages,
-        "response_format": ScreenAction,
+        "response_schema": ScreenAction.model_json_schema(),
         "temperature": TEMPERATURE,
         "seed": SCREEN_SEED,
         "timeout": TIMEOUT_SECONDS,
-        "max_completion_tokens": MAX_COMPLETION_TOKENS,
-        "max_retries": 0,
+        "max_output_tokens": MAX_COMPLETION_TOKENS,
+        "thinking_budget": 0,
     }
-    if candidate.reasoning_effort is not None:
-        kwargs["reasoning_effort"] = candidate.reasoning_effort
     return kwargs
+
+
+def _gemini_contents(messages: list[dict[str, str]]) -> list[dict[str, Any]]:
+    contents = []
+    for message in messages:
+        role = "model" if message["role"] == "assistant" else "user"
+        contents.append({"role": role, "parts": [{"text": message["content"]}]})
+    return contents
+
+
+def native_completion(
+    *,
+    model: str,
+    messages: list[dict[str, str]],
+    response_schema: dict[str, Any],
+    temperature: float,
+    seed: int,
+    timeout: float,
+    max_output_tokens: int,
+    thinking_budget: int,
+) -> dict[str, Any]:
+    """Call Gemini's native API without an adapter or model output retry."""
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        raise GeminiAPIError("GEMINI_API_KEY is not set", status_code=401)
+    payload = {
+        "contents": _gemini_contents(messages),
+        "generationConfig": {
+            "temperature": temperature,
+            "seed": seed,
+            "maxOutputTokens": max_output_tokens,
+            "responseMimeType": "application/json",
+            "responseJsonSchema": response_schema,
+            "thinkingConfig": {"thinkingBudget": thinking_budget},
+        },
+    }
+    url = f"{GEMINI_API_ROOT}/models/{model}:generateContent"
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "x-goog-api-key": api_key,
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        try:
+            body = json.loads(raw)
+        except json.JSONDecodeError:
+            body = {}
+        error = body.get("error", {}) if isinstance(body, dict) else {}
+        message = error.get("message") if isinstance(error, dict) else None
+        raise GeminiAPIError(
+            str(message or f"Gemini API returned HTTP {exc.code}"),
+            status_code=exc.code,
+        ) from exc
 
 
 def _pace(last_start: float | None, monotonic: Callable[[], float]) -> float:
@@ -310,7 +452,7 @@ def _estimated_cost(candidate: Candidate, totals: dict[str, int]) -> float:
 def run_candidate(
     candidate: Candidate,
     *,
-    completion: Callable[..., Any] = litellm.completion,
+    completion: Callable[..., Any] = native_completion,
     sleep: Callable[[float], None] = time.sleep,
     monotonic: Callable[[], float] = time.monotonic,
     progress: Callable[[str], None] = print,
@@ -450,7 +592,7 @@ def run_candidate(
 
 def run_screen(
     *,
-    completion: Callable[..., Any] = litellm.completion,
+    completion: Callable[..., Any] = native_completion,
     sleep: Callable[[float], None] = time.sleep,
     monotonic: Callable[[], float] = time.monotonic,
     progress: Callable[[str], None] = print,
@@ -538,10 +680,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     public_path = results_dir / "public" / "screen_summary.json"
 
     if args.command == "preflight":
-        ready = bool(os.environ.get("OPENAI_API_KEY"))
+        ready = bool(os.environ.get("GEMINI_API_KEY"))
         report = {
             "screen_version": SCREEN_VERSION,
-            "openai_api_key_present": ready,
+            "gemini_api_key_present": ready,
             "candidate_order": [candidate.model for candidate in CANDIDATES],
             "expected_calls_for_first_passing_candidate": EXPECTED_CALLS,
             "real_g2_material_loaded": False,
@@ -555,8 +697,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(public_path.read_text(encoding="utf-8"), end="")
         return 0
 
-    if not os.environ.get("OPENAI_API_KEY"):
-        raise SystemExit("OPENAI_API_KEY is not set")
+    if not os.environ.get("GEMINI_API_KEY"):
+        raise SystemExit("GEMINI_API_KEY is not set")
     if args.fresh:
         _archive(private_path)
         _archive(public_path)

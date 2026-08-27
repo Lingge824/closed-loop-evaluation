@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
-from pathlib import Path
 import sys
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -47,8 +47,8 @@ class FakeResponse:
 
 def test_candidate_order_is_frozen():
     assert [candidate.model for candidate in screen.CANDIDATES] == [
-        "openai/gpt-5.4-mini-2026-03-17",
-        "openai/gpt-4.1-mini-2025-04-14",
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite",
     ]
 
 
@@ -67,12 +67,83 @@ def test_completion_kwargs_pin_controls():
     assert kwargs["temperature"] == 0.0
     assert kwargs["seed"] == 20260827
     assert kwargs["timeout"] == 90.0
-    assert kwargs["max_completion_tokens"] == 128
-    assert kwargs["max_retries"] == 0
-    assert kwargs["reasoning_effort"] == "none"
-    assert kwargs["response_format"] is screen.ScreenAction
+    assert kwargs["max_output_tokens"] == 128
+    assert kwargs["thinking_budget"] == 0
+    assert kwargs["response_schema"] == screen.ScreenAction.model_json_schema()
     assert screen.MAX_INPUT_TOKENS_PER_CANDIDATE == 1_200_000
     assert screen.MAX_ESTIMATED_COST_PER_CANDIDATE_USD == 2.00
+
+
+def test_native_gemini_payload_preserves_multiturn_roles():
+    assert screen._gemini_contents(
+        [
+            {"role": "user", "content": "question"},
+            {"role": "assistant", "content": "answer"},
+        ]
+    ) == [
+        {"role": "user", "parts": [{"text": "question"}]},
+        {"role": "model", "parts": [{"text": "answer"}]},
+    ]
+
+
+def test_native_gemini_response_is_parsed_and_metered():
+    response = {
+        "candidates": [
+            {"content": {"parts": [{"text": '{"action":"ANSWER","content":"ok"}'}]}}
+        ],
+        "usageMetadata": {
+            "promptTokenCount": 100,
+            "cachedContentTokenCount": 20,
+            "candidatesTokenCount": 10,
+            "thoughtsTokenCount": 0,
+        },
+        "responseId": "gemini_response",
+        "modelVersion": "gemini-2.5-flash",
+    }
+    assert screen._extract_action(response).content == "ok"
+    assert screen._usage_payload(response) == {
+        "input_tokens": 100,
+        "cached_input_tokens": 20,
+        "output_tokens": 10,
+    }
+
+
+def test_native_completion_sends_frozen_controls(monkeypatch):
+    captured = {}
+
+    class HTTPResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b'{"candidates":[],"usageMetadata":{}}'
+
+    def urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["timeout"] = timeout
+        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        return HTTPResponse()
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test-only-key")
+    monkeypatch.setattr(screen.urllib.request, "urlopen", urlopen)
+    screen.native_completion(
+        **screen.completion_kwargs(
+            screen.CANDIDATES[0],
+            [{"role": "user", "content": "synthetic"}],
+        )
+    )
+    assert captured["url"].endswith("/v1beta/models/gemini-2.5-flash:generateContent")
+    assert captured["timeout"] == 90.0
+    config = captured["payload"]["generationConfig"]
+    assert config["temperature"] == 0.0
+    assert config["seed"] == 20260827
+    assert config["maxOutputTokens"] == 128
+    assert config["thinkingConfig"] == {"thinkingBudget": 0}
+    assert config["responseMimeType"] == "application/json"
+    assert config["responseJsonSchema"] == screen.ScreenAction.model_json_schema()
 
 
 def test_first_passing_candidate_stops_screen(monkeypatch):
