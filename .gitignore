@@ -7,3 +7,9 @@
 !.env.example
 experiments/coding_agent/results*/
 artifacts/raw/
+
+# Private G2/G2b operational artifacts
+/experiments/g2_clbench/results/private/
+/experiments/g2_clbench/results/g2b/private/
+/experiments/g2_clbench/results/provider_screen/private/
+/experiments/g2_clbench/results/provider_screen/public/*.archived.*
